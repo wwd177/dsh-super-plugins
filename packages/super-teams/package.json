@@ -1,0 +1,43 @@
+{
+  "name": "@local/dsh-super-teams",
+  "version": "0.13.0-dsh.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "icon": "./assets/icon.svg",
+  "description": "Super Teams · DeepSeek Harness 跨平台通用版（内置 SQLite 持久 DAG 编排引擎 0.16.0-dsh.1 与右侧团队工作台）",
+  "engines": {
+    "node": ">=22.13.0",
+    "dsh": ">=0.2.0-rc.1 <0.3.0-0"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./icon": "./assets/icon.svg",
+    "./locale/*.json": "./locale/*.json",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-commands",
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "meta": {
+    "title": "Super Teams",
+    "description": "Super Teams 统一持久 SQLite WAL 关键路径 DAG 编排引擎、行为测试门禁、写入范围互斥锁与右侧团队工作台；主会话模型由使用者选择。"
+  }
+}

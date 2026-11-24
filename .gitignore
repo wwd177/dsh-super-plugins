@@ -1,0 +1,9 @@
+node_modules/
+backup-*/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.lock
+.DS_Store
+Thumbs.db
+*.log

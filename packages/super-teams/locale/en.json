@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Super Teams",
+    "description": "Unified SQLite WAL critical-path DAG orchestration engine (0.16.0-dsh.1), behavioral autoAccept gate, runtime write-scope mutex, and right-sidebar Team Workbench."
+  }
+}

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="engine-token" content="__ENGINE_TOKEN__"><title>SuperAgent 团队工作台 · DeepSeek Harness</title><link rel="stylesheet" href="./style.css"><script src="./app.js" type="module"></script></head>
+<body>
+<div id="sa-shell" class="sa-shell">
+<header class="app-header">
+  <div class="brand"><span class="brand-mark" aria-hidden="true">S</span><div><h1>SuperAgent <span>团队</span></h1><p>DeepSeek Harness 原生协作工作台</p></div></div>
+  <div class="header-tools">
+    <label class="inline-setting" title="同时执行的子任务上限"><span>并发</span><select id="concurrency-select" aria-label="并发执行数"><option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="6">6</option></select></label>
+    <button id="toggle-theme" type="button" class="quiet" title="切换界面主题（自动跟随 Harness / 深色 / 浅色）">主题：自动</button>
+    <button id="toggle-audit" type="button" class="quiet" aria-pressed="false" title="展开或折叠审计边界与技术脚注">审计详情</button>
+    <div id="connection" class="connection" role="status">正在连接 Harness</div>
+  </div>
+</header>
+<main>
+<section id="approval-banner" class="approval-banner" hidden aria-live="polite"></section>
+<p id="connection-error" class="error" role="status" hidden></p>
+<p id="system-health" class="hint" role="status" hidden></p>
+<div class="team-switcher">
+  <label for="team-select">当前团队</label>
+  <div class="switcher-controls">
+    <input id="team-filter" type="search" class="team-filter" placeholder="筛选团队…" aria-label="筛选团队">
+    <select id="team-select" aria-label="选择团队"><option value="">选择团队</option></select>
+    <label class="check compact-check" title="在下拉列表中显示已归档团队"><input id="show-archived" type="checkbox"><span>含已归档</span></label>
+    <button id="new-team" type="button" class="secondary">新建团队</button>
+  </div>
+</div>
+<div id="notice" role="status" hidden></div>
+<section id="overview" class="overview"><div class="empty"><span class="empty-symbol" aria-hidden="true">＋</span><h2>在主聊天提出一个目标</h2><p>告诉 DeepSeek Harness 你想完成什么，使用 <code>/superagent-workflow</code> 组建团队并拆解波次任务，建立后会自动在此展示。</p><p class="hint">也可以点击右上角「新建团队」套用科学协作模板，先筹备再统一开工。</p></div></section>
+<details id="dsh-session-panel" hidden><summary>DeepSeek Harness 会话挂载</summary><p class="hint">团队子代理挂载在当前活跃的 DeepSeek Harness 根会话下运行，继承其工作区授权与子代理模型允许列表，绝不改动主会话模型设置。</p><p id="dsh-session-status" role="status" class="hint">正在读取当前会话状态…</p><div class="actions"><button id="dsh-bind-session" type="button" class="secondary">绑定当前活跃会话到此团队</button><button id="dsh-refresh-session" type="button" class="quiet">刷新会话状态</button></div></details>
+<div id="workbench" class="workbench" hidden>
+<section class="roster-panel"><div class="section-heading"><h2 id="roster-title">团队成员</h2><span id="member-count" class="muted"></span></div><div id="members" class="members"></div></section>
+<section class="member-panel"><div id="member-heading"></div><div id="task-tabs" class="task-tabs" aria-label="成员任务"></div><nav id="detail-tabs" class="detail-tabs" aria-label="查看内容"><button type="button" data-view="task" class="active">任务与结果</button><button type="button" data-view="activity">真实活动</button><button type="button" data-view="sources">团队资料</button></nav><div id="detail"></div><div id="activity" hidden></div><div id="sources-panel" hidden><p id="source-scope" class="hint"></p><div id="source-list"></div><details class="add-source"><summary>添加资料与关键约束</summary><form id="source-form"><label>资料名称<input name="label" required maxlength="120" placeholder="例如：交付要求 / 接口共识"></label><label>内容类型<select name="kind"><option value="document">普通文档</option><option value="ruling">团队决策 / 共识 (Ruling)</option><option value="log">运行日志</option><option value="stdout">标准输出</option><option value="stderr">错误输出</option></select></label><label>完整原文<textarea name="text" rows="5" required></textarea></label><label class="check"><input type="checkbox" name="critical">作为当前团队的关键约束</label><button type="submit">保存资料</button></form><p class="hint audit-note">关键内容完整保留；团队决策 (Ruling) 自动随队内任务附带；超出预算会明确报错。</p></details></div></section>
+</div>
+<section id="source-viewer" hidden><div class="section-heading"><h2>资料原文</h2><button id="source-close" type="button" class="quiet">关闭</button></div><pre id="source-content" class="log"></pre><details><summary>原文定位与校验</summary><p id="source-location" class="meta"></p></details><button id="source-next" type="button" class="secondary" disabled>下一页原文</button></section>
+<details id="legacy-tools" hidden><summary>新建独立任务</summary><form id="task-form"><label>名称<input name="title" required maxlength="120"></label><label>任务与完成条件<textarea name="goal" rows="4" required></textarea></label><label>任务难度<select name="difficulty"><option value="low">简单</option><option value="medium" selected>一般</option><option value="high">复杂</option></select></label><label>依赖任务<select name="dependency"><option value="">无依赖</option></select></label><fieldset><legend>上下文资料</legend><div id="source-options"></div></fieldset><label>文件检查（选填）<input name="checkPath" placeholder="相对路径，例如 result.txt"></label><label>文件须包含（选填）<input name="checkValue"></label><button type="submit">加入执行队列</button></form></details>
+</main>
+<footer>SQLite WAL 持久状态库 · 跨重启恢复 · 行为测试门禁与写入范围互斥锁</footer>
+<dialog id="team-dialog" aria-labelledby="dialog-title"><form id="team-form"><div class="section-heading"><div><h2 id="dialog-title">新建团队</h2><p>先明确目标，再安排每位成员的职责与难度，或一键套用科学协作模板。</p></div><button id="close-dialog" type="button" class="quiet" aria-label="关闭新建团队">✕</button></div><div class="template-bar" id="team-templates" aria-label="快速套用团队模板"><span class="muted">快速模板：</span><button type="button" class="quiet template-btn" data-template="delivery">研发交付铁三角</button><button type="button" class="quiet template-btn" data-template="fullstack">全栈并行双线</button><button type="button" class="quiet template-btn" data-template="debug">根因排查修复</button><button type="button" class="quiet template-btn" data-template="research">调研方案评审</button></div><label>团队名称<input name="name" maxlength="120" required placeholder="例如：产品体验改进"></label><label>共同目标<textarea name="goal" rows="3" required placeholder="希望交付什么，怎样算完成？"></textarea></label><div class="section-heading"><h3>成员与职责（最多 12 位）</h3><button id="add-member" type="button" class="quiet">＋ 添加成员</button></div><div id="member-fields"></div><p class="hint">保存后为筹备状态。点击“开始协作”才会创建成员任务并运行。</p><p id="create-error" class="error" role="status" hidden></p><button id="create-team" type="submit">保存为筹备团队</button></form></dialog>
+</div>
+</body></html>

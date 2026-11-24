@@ -1,0 +1,4 @@
+- insert:
+    - id: superteams-dsh
+      name: '@local/dsh-super-teams'
+      disabled: !!js "[...ctx.loader.entries()].some((e) => e.options.name === '@local/dsh-super-teams' && e.options.id !== 'superteams-dsh' && !e.disabled)"

@@ -1,0 +1,18 @@
+{
+  "name": "dsh-super-plugins",
+  "version": "0.16.0-dsh.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Universal SuperAgent & Super Teams multi-agent orchestration plugins and installer skill for DeepSeek Harness (Windows / macOS / Linux)",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "install-dsh": "node ./scripts/install.mjs",
+    "verify": "node ./scripts/install.mjs --verify",
+    "uninstall-dsh": "node ./scripts/install.mjs --uninstall",
+    "test": "node --no-warnings --test ./tests/dsh-runtime.test.mjs ./tests/board.test.mjs",
+    "test:ui": "node --no-warnings ./tests/dsh-ui-smoke.mjs"
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "name": "@local/dsh-superagent-menu",
+  "version": "1.21.0-dsh.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "icon": "./assets/icon.svg",
+  "description": "SuperAgent 协作与交付 · DeepSeek Harness 跨平台通用版",
+  "engines": {
+    "node": ">=22.13.0",
+    "dsh": ">=0.2.0-rc.1 <0.3.0-0"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./icon": "./assets/icon.svg",
+    "./locale/*.json": "./locale/*.json",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-commands",
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "meta": {
+    "title": "SuperAgent 协作与交付",
+    "description": "SuperAgent 协作与交付（1.21.0-dsh.1）；负责目标拆解、证据验收与交付方法论，配合 Super Teams 统一持久引擎执行。"
+  }
+}

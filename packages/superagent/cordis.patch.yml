@@ -1,0 +1,4 @@
+- insert:
+    - id: superagent-dsh
+      name: '@local/dsh-superagent-menu'
+      disabled: !!js "[...ctx.loader.entries()].some((e) => e.options.name === '@local/dsh-superagent-menu' && e.options.id !== 'superagent-dsh' && !e.disabled)"
