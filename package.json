@@ -1,6 +1,6 @@
 {
   "name": "dsh-super-plugins",
-  "version": "0.16.0-dsh.1",
+  "version": "0.16.1-dsh.1",
   "private": true,
   "type": "module",
   "license": "MIT",

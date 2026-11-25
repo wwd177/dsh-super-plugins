@@ -563,3 +563,221 @@ test('writeScopes enforces runtime scheduler mutex (write-scope-lock) and reject
     fs.rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test('v0.16.1 P0/P1 regressions: turnId!=threadId reconciliation with negative control, post-node_test write_scope_guard, unscoped mutex, cold-start changes cursor & CSRF fence', async () => {
+  // 1. P0-1: Post-restart & resident reconciliation when threadId=S, turnId=M (S != M) + negative control turn OTHER
+  const reconDir = makeTempDir('dsh-rt-recon-');
+  const residentSessions = new Map();
+  const historicalSessions = new Map();
+  let dispatchCount = 0;
+
+  const reconHost = createFakeDshHost({
+    runner: async spec => {
+      dispatchCount++;
+      fs.writeFileSync(path.join(spec.cwd, 'queued-out.txt'), 'ok');
+      return { text: 'Second queued task finished after slot freed!' };
+    },
+  });
+  // Override agents & sessionQuery to test both resident and historical branches with S != M and negative control OTHER
+  const origGet = reconHost.ctx.agents.get;
+  reconHost.ctx.agents.get = id => residentSessions.get(id) ?? origGet(id);
+  reconHost.ctx.sessionQuery.observeSession = async id => ({
+    events: historicalSessions.get(id) ?? [],
+    async [Symbol.asyncDispose]() {},
+  });
+
+  // Seed persisted unresolved task (maxConcurrent=1) with threadId='S-thread', turnId='M-turn' (S != M), plus a second queued task
+  const seedRt = new DshSuperTeamsRuntime({ ctx: reconHost.ctx, dataDir: reconDir });
+  let stuckTaskId;
+  let queuedTaskId;
+  let stuckWorkspace;
+  try {
+    await seedRt.ensureStarted();
+    seedRt.engine.setMaxConcurrent(1);
+    const t1 = seedRt.engine.submit({
+      requestId: 'recon-stuck-1',
+      title: 'Interrupted before completion receipt',
+      goal: 'Recover only from M-turn',
+      checks: [{ type: 'file_exists', path: 'recovered.txt' }],
+    });
+    const t2 = seedRt.engine.submit({
+      requestId: 'recon-queued-2',
+      title: 'Waiting behind maxConcurrent=1',
+      goal: 'Run once t1 frees slot',
+      checks: [{ type: 'file_exists', path: 'queued-out.txt' }],
+    });
+    stuckTaskId = t1.id;
+    queuedTaskId = t2.id;
+    stuckWorkspace = path.join(reconDir, 'workspaces', stuckTaskId, 'att-m');
+    fs.mkdirSync(stuckWorkspace, { recursive: true });
+    fs.writeFileSync(path.join(stuckWorkspace, 'recovered.txt'), 'recovered-payload');
+
+    const raw = seedRt.engine.get(stuckTaskId);
+    Object.assign(raw, {
+      state: 'unknown',
+      executionUnresolved: true,
+      attemptId: 'att-m',
+      cwd: stuckWorkspace,
+      threadId: 'S-thread',
+      turnId: 'M-turn',
+      startedAt: new Date().toISOString(),
+    });
+    seedRt.engine._save(raw, 'seed-unresolved');
+  } finally {
+    await seedRt.close();
+  }
+
+  // Reopen runtime (simulating restart) -> first give ONLY negative-control turn 'OTHER-turn' in historical branch!
+  historicalSessions.set('S-thread', [
+    { turnId: 'OTHER-turn', type: 'message/assistant', data: { message: { role: 'assistant', content: [{ type: 'text', text: 'WRONG TURN RESULT' }] } } },
+    { turnId: 'OTHER-turn', type: 'turn/end', data: { reason: { kind: 'completed' } } },
+  ]);
+
+  const rtRecon = new DshSuperTeamsRuntime({ ctx: reconHost.ctx, dataDir: reconDir });
+  try {
+    await rtRecon.ensureStarted();
+    await rtRecon.engine.reconcile(stuckTaskId);
+    assert.equal(rtRecon.engine.get(stuckTaskId).state, 'unknown', 'Negative control OTHER-turn must NOT complete M-turn');
+    assert.equal(dispatchCount, 0, 'Slot must remain occupied while M-turn is unresolved');
+
+    // Now test RESIDENT branch having prior attempt 'att-old' AND negative-control 'OTHER-turn' AND target 'att-m' / 'M-turn' -> must resolve from M-turn ONLY!
+    residentSessions.set('S-thread', {
+      id: 'S-thread',
+      session: {
+        snapshotEvents: () => [
+          { type: 'message/user', data: { message: { role: 'user', content: [{ type: 'text', text: 'old\n<!-- superagent-attempt:x:att-old -->' }] } } },
+          { type: 'message/assistant', data: { message: { role: 'assistant', content: [{ type: 'text', text: 'STALE ATTEMPT' }] } } },
+          { type: 'turn/end', data: { reason: { kind: 'completed' } } },
+          { turnId: 'OTHER-turn', type: 'message/assistant', data: { message: { role: 'assistant', content: [{ type: 'text', text: 'WRONG TURN' }] } } },
+          { turnId: 'OTHER-turn', type: 'turn/end', data: { reason: { kind: 'completed' } } },
+          { type: 'message/user', data: { message: { role: 'user', content: [{ type: 'text', text: 'cur\n<!-- superagent-attempt:x:att-m -->' }] } } },
+          { turnId: 'M-turn', type: 'message/assistant', data: { message: { role: 'assistant', content: [{ type: 'text', text: 'EXACT M-TURN RESULT' }] } } },
+          { turnId: 'M-turn', type: 'turn/end', data: { reason: { kind: 'completed' } } },
+        ],
+      },
+    });
+    const resolved = await rtRecon.engine.reconcile(stuckTaskId);
+    assert.equal(resolved.state, 'checked', 'Target M-turn completion must resolve task to checked');
+    assert.equal(resolved.executionUnresolved, false);
+    const resEvidence = await rtRecon.engine.result(stuckTaskId);
+    assert.equal(resEvidence.text, 'EXACT M-TURN RESULT');
+
+    // Wait for queued task 2 to automatically dispatch and finish now that maxConcurrent=1 slot is freed!
+    const dl = Date.now() + 6000;
+    while (Date.now() < dl && rtRecon.engine.get(queuedTaskId).state !== 'checked') {
+      await new Promise(r => setTimeout(r, 50));
+    }
+    assert.equal(rtRecon.engine.get(queuedTaskId).state, 'checked', 'Freed slot must allow queued task to execute');
+  } finally {
+    await rtRecon.close();
+    fs.rmSync(reconDir, { recursive: true, force: true });
+  }
+
+  // 2. P0-2: Post-node_test writeScopes check blocks test-generated out-of-scope report in task.cwd, while allowing process.env.TMPDIR output!
+  const scopeTestDir = makeTempDir('dsh-rt-postscope-');
+  const scopeHost = createFakeDshHost({
+    runner: async spec => {
+      fs.mkdirSync(path.join(spec.cwd, 'dist'), { recursive: true });
+      fs.writeFileSync(path.join(spec.cwd, 'dist/lib.cjs'), 'module.exports = { ok: true };\n');
+      return { text: 'Built dist/lib.cjs cleanly' };
+    },
+  });
+  const scopeRt = new DshSuperTeamsRuntime({ ctx: scopeHost.ctx, dataDir: scopeTestDir });
+  try {
+    const execCtx = { agent: scopeHost.rootAgent };
+    // Case A: node_test writes coverage.json into task.cwd outside writeScopes=['dist/**'] -> MUST fail post-check and NOT autoAccept!
+    const badSub = await scopeRt.executeTool('engine_submit', {
+      requestId: 'post-scope-leak',
+      title: 'Test leaks report into cwd',
+      goal: 'Build dist/lib.cjs',
+      writeScopes: ['dist/**'],
+      autoAccept: true,
+      checks: [{
+        type: 'node_test',
+        path: 'dist/lib.cjs',
+        testScript: 'const fs = require("fs"); const m = require(process.argv[1]); if (!m.ok) process.exit(1); fs.writeFileSync("coverage-leak.json", "{}");',
+      }],
+    }, execCtx);
+    const dlA = Date.now() + 6000;
+    while (Date.now() < dlA && !['failed', 'accepted', 'checked'].includes(scopeRt.engine.get(badSub.taskId).state)) {
+      await new Promise(r => setTimeout(r, 50));
+    }
+    const badTask = scopeRt.engine.get(badSub.taskId);
+    assert.equal(badTask.state, 'failed', 'Test-generated out-of-scope file in cwd must fail verification and block autoAccept');
+    assert.match(badTask.error, /post-check.*coverage-leak\.json/);
+
+    // Case B: node_test writes coverage.json into isolated process.env.TMPDIR -> MUST pass and autoAccept!
+    const goodSub = await scopeRt.executeTool('engine_submit', {
+      requestId: 'post-scope-clean-tmp',
+      title: 'Test writes report to isolated TMPDIR',
+      goal: 'Build dist/lib.cjs',
+      writeScopes: ['dist/**'],
+      autoAccept: true,
+      checks: [{
+        type: 'node_test',
+        path: 'dist/lib.cjs',
+        testScript: 'const fs = require("fs"); const path = require("path"); const m = require(process.argv[1]); if (!m.ok) process.exit(1); fs.writeFileSync(path.join(process.env.TMPDIR, "coverage.json"), "{}");',
+      }],
+    }, execCtx);
+    const dlB = Date.now() + 6000;
+    while (Date.now() < dlB && !['failed', 'accepted'].includes(scopeRt.engine.get(goodSub.taskId).state)) {
+      await new Promise(r => setTimeout(r, 50));
+    }
+    assert.equal(scopeRt.engine.get(goodSub.taskId).state, 'accepted', 'Test output in isolated TMPDIR must pass and autoAccept');
+
+    // 3. P1: Cold-start /api/changes?since=-1 returns seq=0 and delivers very first seq=1 open-workbench event, plus CSRF Origin check!
+    const fakeFenceCtx = {
+      ...scopeHost.ctx,
+      connection: { requestRejection: () => undefined },
+      get: name => (name === 'connection' ? { requestRejection: () => undefined } : scopeHost.ctx.get(name)),
+    };
+    const httpDir = makeTempDir('dsh-rt-http-');
+    const httpRt = new DshSuperTeamsRuntime({ ctx: fakeFenceCtx, dataDir: httpDir });
+    try {
+      await httpRt.ensureStarted();
+      const callRouter = async ({ method = 'GET', url, headers = {}, body = null }) => {
+        let status = 200;
+        let out = '';
+        const req = (async function* () {
+          if (body) yield Buffer.from(JSON.stringify(body));
+        })();
+        req.method = method;
+        req.url = url;
+        req.headers = { host: '127.0.0.1:4321', ...headers };
+        req.on = () => {};
+        await httpRt.router.handler(req, {
+          setHeader() {},
+          writeHead(code) { status = code; },
+          end(chunk) { out = String(chunk || ''); },
+        });
+        return { status, json: out ? JSON.parse(out) : null };
+      };
+
+      const initPoll = await callRouter({ url: '/superagent-engine/api/changes?since=-1' });
+      assert.equal(initPoll.status, 200);
+      const startSeq = initPoll.json.seq;
+      assert.deepEqual(initPoll.json.items, []);
+
+      // Trigger first workbench open event right after cold start!
+      await httpRt.executeTool('engine_workspace', {}, execCtx);
+      const secondPoll = await callRouter({ url: `/superagent-engine/api/changes?since=${startSeq}` });
+      assert.equal(secondPoll.status, 200);
+      assert.ok(secondPoll.json.items.some(i => i.event === 'open-workbench'), 'Cold-start first open-workbench event must NOT be dropped');
+
+      // Cross-origin POST in fencedMode must be rejected with 403
+      const csrfRes = await callRouter({
+        method: 'POST',
+        url: '/superagent-engine/api/settings',
+        headers: { origin: 'https://evil.example' },
+        body: { maxConcurrent: 4 },
+      });
+      assert.equal(csrfRes.status, 403);
+    } finally {
+      await httpRt.close();
+      fs.rmSync(httpDir, { recursive: true, force: true });
+    }
+  } finally {
+    await scopeRt.close();
+    fs.rmSync(scopeTestDir, { recursive: true, force: true });
+  }
+});

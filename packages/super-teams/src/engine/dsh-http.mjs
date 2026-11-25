@@ -155,6 +155,11 @@ export function createDshEngineRouter({
       const fencedMode = typeof fence === 'function';
       if (fencedMode) {
         if (!fence(req)) return send(403, { error: 'DeepSeek Harness 会话鉴权未通过' });
+        if (req.method !== 'GET' && req.method !== 'HEAD' && req.headers?.origin && /^https?:/i.test(req.headers.origin) && req.headers?.host) {
+          let originHost = '';
+          try { originHost = new URL(req.headers.origin).host; } catch {}
+          if (originHost !== req.headers.host) return send(403, { error: '跨站写请求被拒绝' });
+        }
       } else {
         res.setHeader('X-Frame-Options', 'DENY');
         res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
@@ -206,8 +211,11 @@ export function createDshEngineRouter({
       if (req.method === 'GET' && pathname === '/api/health') return send(200, await health());
 
       if (req.method === 'GET' && pathname === '/api/changes') {
-        const since = integer(query.since, 0, 2e9);
-        const items = since === 0 ? [] : changeLog.filter(item => item.seq > since);
+        const rawSince = query.since !== undefined ? Number(query.since) : -1;
+        if (!Number.isSafeInteger(rawSince) || rawSince < -1 || rawSince > 2e9) {
+          throw new Error('分页参数无效');
+        }
+        const items = rawSince < 0 ? [] : changeLog.filter(item => item.seq > rawSince);
         return send(200, { seq: changeSeq, items });
       }
 

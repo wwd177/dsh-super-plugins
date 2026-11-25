@@ -11,10 +11,10 @@ const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
 
 const PLUGIN_NAMES = ['@local/dsh-superagent-menu', '@local/dsh-super-teams'];
 const SKILL_ENTRIES = [
-  { name: 'superagent-workflow', package: 'superagent', version: '1.21.0-dsh.1' },
-  { name: 'workflow-quality', package: 'superagent', version: '1.21.0-dsh.1' },
-  { name: 'development-handoff', package: 'superagent', version: '1.21.0-dsh.1' },
-  { name: 'super-teams', package: 'super-teams', version: '0.13.0-dsh.1' },
+  { name: 'superagent-workflow', package: 'superagent', version: '1.21.1-dsh.1' },
+  { name: 'workflow-quality', package: 'superagent', version: '1.21.1-dsh.1' },
+  { name: 'development-handoff', package: 'superagent', version: '1.21.1-dsh.1' },
+  { name: 'super-teams', package: 'super-teams', version: '0.13.1-dsh.1' },
 ];
 
 function parseArgs(argv) {
@@ -199,8 +199,15 @@ function runDshCli(dshCli, args) {
 
   let res;
   if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(dshCli)) {
-    const quote = s => `"${String(s).replace(/"/g, '""')}"`;
-    const cmdLine = `${quote(dshCli)} ${args.map(quote).join(' ')}`;
+    // Pass executable and arguments via environment variables so cmd.exe performs single-pass
+    // expansion without re-expanding literal %VAR% tokens or breaking on spaces/metacharacters.
+    cleanEnv.DSH_CLI_BIN = dshCli;
+    const argRefs = args.map((val, idx) => {
+      const key = `DSH_CLI_ARG_${idx}`;
+      cleanEnv[key] = String(val);
+      return `"%${key}%"`;
+    });
+    const cmdLine = `"%DSH_CLI_BIN%" ${argRefs.join(' ')}`.trim();
     res = spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `"${cmdLine}"`], {
       env: cleanEnv,
       encoding: 'utf8',
@@ -332,23 +339,37 @@ function performInstall(opts) {
   const beforeManifest = JSON.parse(fs.readFileSync(profileManifestPath, 'utf8'));
 
   const backupParent = path.join(dshHome, 'profile-backups', 'dsh-super-plugins');
-  const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
-  const backupRoot = opts.backupRoot ? path.resolve(opts.backupRoot) : path.join(backupParent, stamp);
-  fs.mkdirSync(backupRoot, { recursive: true });
+  fs.mkdirSync(backupParent, { recursive: true });
+  const safeProfile = String(profile).replace(/[^a-zA-Z0-9._-]/g, '_');
+  const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 17);
+  const randSuffix = crypto.randomBytes(3).toString('hex');
+  const backupRoot = opts.backupRoot
+    ? path.resolve(opts.backupRoot)
+    : path.join(backupParent, `${safeProfile}-${stamp}-${randSuffix}`);
+  if (opts.backupRoot) fs.mkdirSync(backupRoot, { recursive: true });
+  else fs.mkdirSync(backupRoot, { recursive: false });
 
   for (const fname of ['package.json', 'pnpm-lock.yaml', 'cordis.patch.yml', 'cordis.yml']) {
     const f = path.join(profileDir, fname);
     if (fs.existsSync(f)) fs.copyFileSync(f, path.join(backupRoot, fname));
   }
 
-  // 1. Stage self-contained package copies inside <dshHome>/local-packages/dsh-super-plugins
-  const stageRoot = path.join(dshHome, 'local-packages', 'dsh-super-plugins');
-  fs.mkdirSync(stageRoot, { recursive: true });
+  // 1. Atomically stage self-contained package copies inside <dshHome>/local-packages before swapping
+  const localPackagesDir = path.join(dshHome, 'local-packages');
+  fs.mkdirSync(localPackagesDir, { recursive: true });
+  const stageRoot = path.join(localPackagesDir, 'dsh-super-plugins');
+  const tempStageRoot = path.join(localPackagesDir, `.staging-dsh-super-plugins-${process.pid}-${randSuffix}`);
+  const prevStageBackup = path.join(localPackagesDir, `.backup-dsh-super-plugins-${process.pid}-${randSuffix}`);
+  removeEntrySafe(tempStageRoot);
+  fs.mkdirSync(tempStageRoot, { recursive: true });
   for (const pkg of ['superagent', 'super-teams']) {
     const src = path.join(pkgSourceRoot, pkg);
-    const dst = path.join(stageRoot, pkg);
-    removeEntrySafe(dst);
+    const dst = path.join(tempStageRoot, pkg);
     copyPlainTree(src, dst);
+    if (!fs.existsSync(path.join(dst, 'package.json'))) {
+      removeEntrySafe(tempStageRoot);
+      throw new Error(`Staging incomplete for package ${pkg}`);
+    }
   }
 
   // 2. Back up any pre-existing skills before replacing
@@ -370,47 +391,66 @@ function performInstall(opts) {
   }
   fs.writeFileSync(path.join(backupRoot, 'previous-skills.json'), JSON.stringify(previousSkills, null, 2) + '\n', 'utf8');
 
-  // 3. Register both self-contained packages via native dsh plugin manager
-  // Use link:<dshHome>/local-packages/... so pnpm v11 cleanly updates any prior link: entry while staying 100% self-contained inside ~/.dsh.
-  const agentSpec = 'link:' + path.join(stageRoot, 'superagent').replace(/\\/g, '/');
-  const teamsSpec = 'link:' + path.join(stageRoot, 'super-teams').replace(/\\/g, '/');
-  runDshCli(dshCli, ['plugin', '--profile', profile, 'add', agentSpec, teamsSpec]);
+  const hadPrevStage = fs.existsSync(stageRoot);
+  if (hadPrevStage) fs.renameSync(stageRoot, prevStageBackup);
+  try {
+    fs.renameSync(tempStageRoot, stageRoot);
 
-  // 4. Install 4 skills as regular directories with SHA-256 lock verification
-  const skillLocks = {};
-  for (const entry of SKILL_ENTRIES) {
-    const src = path.join(stageRoot, entry.package, 'skills', entry.name);
-    const dst = path.join(skillRoot, entry.name);
-    removeEntrySafe(dst);
-    copyPlainTree(src, dst);
+    // 3. Register both self-contained packages via native dsh plugin manager
+    const agentSpec = 'link:' + path.join(stageRoot, 'superagent').replace(/\\/g, '/');
+    const teamsSpec = 'link:' + path.join(stageRoot, 'super-teams').replace(/\\/g, '/');
+    runDshCli(dshCli, ['plugin', '--profile', profile, 'add', agentSpec, teamsSpec]);
 
-    const files = {};
-    for (const rel of collectRelativeFiles(src)) {
-      const h = sha256File(path.join(src, rel));
-      const dh = sha256File(path.join(dst, rel));
-      if (h !== dh) throw new Error(`Skill hash verification failed for ${entry.name}/${rel}`);
-      files[rel] = h;
+    // 4. Atomically stage and swap 4 skills as regular directories with SHA-256 lock verification
+    const skillLocks = {};
+    for (const entry of SKILL_ENTRIES) {
+      const src = path.join(stageRoot, entry.package, 'skills', entry.name);
+      const dst = path.join(skillRoot, entry.name);
+      const tempSkillDst = path.join(skillRoot, `.staging-${entry.name}-${process.pid}-${randSuffix}`);
+      removeEntrySafe(tempSkillDst);
+      copyPlainTree(src, tempSkillDst);
+
+      const files = {};
+      for (const rel of collectRelativeFiles(src)) {
+        const h = sha256File(path.join(src, rel));
+        const dh = sha256File(path.join(tempSkillDst, rel));
+        if (h !== dh) {
+          removeEntrySafe(tempSkillDst);
+          throw new Error(`Skill hash verification failed for ${entry.name}/${rel}`);
+        }
+        files[rel] = h;
+      }
+      removeEntrySafe(dst);
+      fs.renameSync(tempSkillDst, dst);
+      skillLocks[entry.name] = {
+        package: entry.package,
+        version: entry.version,
+        installedPath: dst,
+        stagedSourcePath: src,
+        files,
+      };
     }
-    skillLocks[entry.name] = {
-      package: entry.package,
-      version: entry.version,
-      installedPath: dst,
-      stagedSourcePath: src,
-      files,
-    };
-  }
 
-  fs.writeFileSync(
-    path.join(stageRoot, 'skill-lock.json'),
-    JSON.stringify({
-      generatedAt: new Date().toISOString(),
-      engineVersion: '0.16.0-dsh.1',
-      superagentVersion: '1.21.0-dsh.1',
-      superTeamsVersion: '0.13.0-dsh.1',
-      skills: skillLocks,
-    }, null, 2) + '\n',
-    'utf8'
-  );
+    fs.writeFileSync(
+      path.join(stageRoot, 'skill-lock.json'),
+      JSON.stringify({
+        generatedAt: new Date().toISOString(),
+        engineVersion: '0.16.1-dsh.1',
+        superagentVersion: '1.21.1-dsh.1',
+        superTeamsVersion: '0.13.1-dsh.1',
+        skills: skillLocks,
+      }, null, 2) + '\n',
+      'utf8'
+    );
+    removeEntrySafe(prevStageBackup);
+  } catch (err) {
+    removeEntrySafe(tempStageRoot);
+    if (hadPrevStage && fs.existsSync(prevStageBackup)) {
+      removeEntrySafe(stageRoot);
+      try { fs.renameSync(prevStageBackup, stageRoot); } catch {}
+    }
+    throw err;
+  }
 
   // 5. Verify unrelated plugins/bundles & protected credentials remain 100% untouched
   const afterManifest = JSON.parse(fs.readFileSync(profileManifestPath, 'utf8'));
@@ -448,9 +488,9 @@ function performInstall(opts) {
     profile,
     backup: backupRoot,
     versions: {
-      engine: '0.16.0-dsh.1',
-      superagent: '1.21.0-dsh.1',
-      superTeams: '0.13.0-dsh.1',
+      engine: '0.16.1-dsh.1',
+      superagent: '1.21.1-dsh.1',
+      superTeams: '0.13.1-dsh.1',
     },
     plugins: verification.plugins,
     skills: verification.skills,
@@ -509,7 +549,7 @@ if (isMain) {
     } else if (opts.mode === 'uninstall') {
       console.log(`[OK] Uninstalled SuperAgent + Super Teams from ${result.dshHome} (profile: ${result.profile}). Restart DeepSeek Harness to apply.`);
     } else {
-      console.log(`[OK] Installed SuperAgent 1.21.0-dsh.1 + Super Teams 0.13.0-dsh.1 (Engine 0.16.0-dsh.1) into ${result.dshHome} (profile: ${result.profile}).`);
+      console.log(`[OK] Installed SuperAgent 1.21.1-dsh.1 + Super Teams 0.13.1-dsh.1 (Engine 0.16.1-dsh.1) into ${result.dshHome} (profile: ${result.profile}).`);
       console.log(`     Backup saved to: ${result.backup}`);
       console.log(`     Please restart DeepSeek Harness once to load the updated plugins and Team Workbench.`);
     }

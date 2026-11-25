@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-superagent-menu",
-  "version": "1.21.0-dsh.1",
+  "version": "1.21.1-dsh.1",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -35,6 +35,6 @@
   },
   "meta": {
     "title": "SuperAgent 协作与交付",
-    "description": "SuperAgent 协作与交付（1.21.0-dsh.1）；负责目标拆解、证据验收与交付方法论，配合 Super Teams 统一持久引擎执行。"
+    "description": "SuperAgent 协作与交付（1.21.1-dsh.1）；负责目标拆解、证据验收与交付方法论，配合 Super Teams 统一持久引擎执行。"
   }
 }

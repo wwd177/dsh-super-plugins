@@ -1,11 +1,11 @@
 {
   "name": "@local/dsh-super-teams",
-  "version": "0.13.0-dsh.1",
+  "version": "0.13.1-dsh.1",
   "private": true,
   "type": "module",
   "license": "MIT",
   "icon": "./assets/icon.svg",
-  "description": "Super Teams · DeepSeek Harness 跨平台通用版（内置 SQLite 持久 DAG 编排引擎 0.16.0-dsh.1 与右侧团队工作台）",
+  "description": "Super Teams · DeepSeek Harness 跨平台通用版（内置 SQLite 持久 DAG 编排引擎 0.16.1-dsh.1 与右侧团队工作台）",
   "engines": {
     "node": ">=22.13.0",
     "dsh": ">=0.2.0-rc.1 <0.3.0-0"

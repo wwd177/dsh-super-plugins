@@ -80,8 +80,12 @@ export class DshSuperTeamsRuntime {
   ensureStarted() {
     if (this.closed) throw new Error('DshSuperTeamsRuntime is closed');
     if (this.initPromise) return this.initPromise;
-    this.initPromise = this._start();
-    return this.initPromise;
+    const pending = this._start().catch(err => {
+      if (this.initPromise === pending) this.initPromise = null;
+      throw err;
+    });
+    this.initPromise = pending;
+    return pending;
   }
 
   async _start() {
@@ -94,13 +98,23 @@ export class DshSuperTeamsRuntime {
       }
     } catch { /* default 2 */ }
     this.contextStore = new ContextStore(path.join(this.dataDir, 'context'));
-    this.engine = new Engine({
+    const engine = new Engine({
       dataDir: this.dataDir,
       adapter: this.adapter,
       contextStore: this.contextStore,
       maxConcurrent,
     });
-    await this.engine.initialize({ connectInBackground: true });
+    try {
+      await engine.initialize({ connectInBackground: true });
+    } catch (err) {
+      try { await engine.close(); } catch {}
+      throw err;
+    }
+    if (this.closed) {
+      try { await engine.close(); } catch {}
+      throw new Error('DshSuperTeamsRuntime closed during initialization');
+    }
+    this.engine = engine;
     const connection = this.ctx?.get?.('connection') ?? this.ctx?.connection;
     const fence = connection?.requestRejection
       ? req => connection.requestRejection(req) === undefined
@@ -508,12 +522,16 @@ export class DshSuperTeamsRuntime {
   async close() {
     if (this.closed) return;
     this.closed = true;
-    try { this.router?.dispose(); } catch {}
-    try { this.approvals?.close(); } catch {}
-    if (this.engine) {
-      try { await this.engine.close(); } catch {}
+    const warn = (comp, err) => this.ctx?.logger?.warn?.(`super-teams: ${comp} disposal warning: ${err?.message ?? err}`);
+    if (this.initPromise) {
+      try { await this.initPromise; } catch {}
     }
-    try { await this.adapter?.close(); } catch {}
+    try { this.router?.dispose(); } catch (err) { warn('router', err); }
+    try { this.approvals?.close(); } catch (err) { warn('approvals', err); }
+    if (this.engine) {
+      try { await this.engine.close(); } catch (err) { warn('engine', err); }
+    }
+    try { await this.adapter?.close(); } catch (err) { warn('adapter', err); }
   }
 }
 

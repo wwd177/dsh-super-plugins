@@ -12,23 +12,23 @@
 
 | 组件 | 包名与版本 | 核心职责 |
 | --- | --- | --- |
-| **SuperAgent 协作与交付** | `@local/dsh-superagent-menu` (`1.21.0-dsh.1`) | 复杂任务拆解、证据选路、行为测试门禁设计与最终集成方法论；内置 `superagent-workflow`、`workflow-quality`、`development-handoff` 3 套技能与聊天「＋」快捷菜单 |
-| **Super Teams 持久编排引擎** | `@local/dsh-super-teams` (`0.13.0-dsh.1`) | 内置 SQLite WAL 持久关键路径 DAG 编排引擎 (`0.16.0-dsh.1`)、8 个统一原生工具、双右侧栏自适应「团队工作台」与 `super-teams` 技能 |
-| **AI 智能体专用安装 Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.0.0`) | 供其他 AI 智能体（DeepSeek Harness / Claude Code / Codex / Cursor / Antigravity 等）自动完成全平台检测、备份、自包含安装与哈希校验 |
+| **SuperAgent 协作与交付** | `@local/dsh-superagent-menu` (`1.21.1-dsh.1`) | 复杂任务拆解、证据选路、行为测试门禁设计与最终集成方法论；内置 `superagent-workflow`、`workflow-quality`、`development-handoff` 3 套技能与聊天「＋」快捷菜单 |
+| **Super Teams 持久编排引擎** | `@local/dsh-super-teams` (`0.13.1-dsh.1`) | 内置 SQLite WAL 持久关键路径 DAG 编排引擎 (`0.16.1-dsh.1`)、8 个统一原生工具、双右侧栏自适应「团队工作台」与 `super-teams` 技能 |
+| **AI 智能体专用安装 Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.0.1`) | 供其他 AI 智能体（DeepSeek Harness / Claude Code / Codex / Cursor / Antigravity 等）自动完成全平台检测、备份、自包含安装与哈希校验 |
 
 ---
 
 ## 核心特性
 
-1. **单一团队、单一持久状态库（跨重启 100% 恢复）**：
-   - 团队、DAG 波次、成员结果、`ruling` 架构裁决账本与 SHA-256 产物快照统一落盘于 `~/.dsh/profiles/desktop/plugin-data/dsh-super-teams/engine.sqlite`（SQLite WAL 模式），关闭或重启桌面端后状态完整保留。
+1. **单一团队、单一持久状态库（跨重启精确对账恢复）**：
+   - 团队、DAG 波次、成员结果、`ruling` 架构裁决账本与 SHA-256 产物快照统一落盘于 `~/.dsh/profiles/desktop/plugin-data/dsh-super-teams/engine.sqlite`（SQLite WAL 模式），重启后支持驻留/历史会话双分支 `turnId` 精确对账恢复。
    - 默认仅暴露 **8 个统一工具**（`engine_workspace`、`engine_team`、`engine_submit`、`engine_overview`、`engine_control`、`engine_source`、`engine_evidence` 及同源只读视图 `teams_engine`），避免双任务板分裂。
 2. **`autoAccept: true` 强制可执行行为测试门禁**：
-   - 禁止仅靠 `file_exists` / `file_contains` / `json_equals` 等静态检查开启自动放行；必须至少配有一条 `node_test` 行为断言（支持在 `prepare` / `engine_submit` 中直接内联 `testScript`），退出码 `0` 才冻结快照并解锁下游波次，杜绝“生成了空壳文件但逻辑未实现”的假阳性。
-3. **`writeScopes` 双层强约束（运行时互斥锁 + 盘后越界拦截）**：
-   - 同队并行任务若声明重叠 `writeScopes`，调度器自动施加运行时互斥锁（`write-scope-lock`）串行排队；任务结束时自动扫描工作区，拦截落在声明 `writeScopes` 之外的新增产物文件（`write_scope_guard`）。
-4. **双右侧栏无缝兼容与窄屏自适应**：
-   - 同时支持官方右侧栏（`sidebarRightTabs`）与社区 `dsh-better-sidebar`，采用 Shadow DOM + Constructable `CSSStyleSheet` 隔离样式，自动跟随 DeepSeek Harness 深色/浅色主题切换。
+   - 禁止仅靠 `file_exists` / `file_contains` / `json_equals` 等静态检查开启自动放行；必须至少配有一条 `node_test` 行为断言（支持在 `prepare` / `engine_submit` 中直接内联 `testScript`，并提供独立临时目录与最小化运行环境），退出码 `0` 且交付树无越界文件才冻结快照。
+3. **`writeScopes` 全链路强约束（同队互斥锁 + 测前/测后双重越界拦截）**：
+   - 启用 `writeScopes` 的团队自动对重叠范围及未声明范围任务施加运行时互斥锁（`write-scope-lock`）串行排队；验收器在执行测试前与执行测试后双重扫描工作区，拦截任何越界产物或符号链接（`write_scope_guard`）。
+4. **双右侧栏无缝兼容与冷启动首事件零丢失**：
+   - 同时支持官方右侧栏（`sidebarRightTabs`）与社区 `dsh-better-sidebar`，采用 Shadow DOM + Constructable `CSSStyleSheet` 隔离样式，支持冷启动首次建队即刻自动弹出工作台并跟随深浅色主题切换。
 5. **模型允许列表尊重与推理档位预检**：
    - 绝不改动用户主会话模型与推理设置；子代理严格遵循会话 `subagentModelSelectionPolicy` 允许列表，并通过 `llm.resolveCallConfig` 自动预检回退不支持 `reasoningEffort` 的模型。
 
@@ -49,7 +49,7 @@
 
 ### 方式二：手动一键脚本安装（即使本机没装 Node.js 也能运行）
 
-克隆或解压本仓库后，在仓库根目录执行（脚本会自动检测系统 `node >=22` 或直接复用 DeepSeek Harness 内置运行时，并将包自包含复制到 `~/.dsh/local-packages`）：
+克隆或解压本仓库后，在仓库根目录执行（脚本会自动检测系统 `node >=22` 或直接复用 DeepSeek Harness 内置运行时，并将包原子暂存复制到 `~/.dsh/local-packages`）：
 
 - **Windows (PowerShell)**：
   ```powershell
@@ -83,11 +83,11 @@ node ./scripts/install.mjs --verify
 # 干净卸载插件与 4 套技能（默认保留 engine.sqlite 历史团队数据；加 --purge-data 连同数据一并清理）
 node ./scripts/install.mjs --uninstall
 
-# 运行单元、跨重启持久化、行为门禁与写入互斥锁回归测试（需 Node >=22.13）
+# 运行单元、跨重启对账、行为门禁与写入互斥锁回归测试（需 Node >=22.13）
 node --test ./tests/dsh-runtime.test.mjs ./tests/board.test.mjs
 ```
 
-> **安全与验证边界说明**：每次安装会自动在 `~/.dsh/profile-backups/dsh-super-plugins/` 生成回滚快照，绝不触碰 `.credentials.yaml`、`.env` 或其他已装插件。`node_test` 与工作区 `writeScopes` 扫描运行于当前用户权限下，不构成操作系统内核级沙箱。
+> **安全与验证边界说明**：每次安装会自动在 `~/.dsh/profile-backups/dsh-super-plugins/` 生成独立回滚快照，绝不触碰 `.credentials.yaml`、`.env` 或其他已装插件。`node_test` 与工作区 `writeScopes` 扫描运行于当前用户权限下，不构成操作系统内核级沙箱。
 
 ## 开源许可
 

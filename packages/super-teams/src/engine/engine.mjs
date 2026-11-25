@@ -110,11 +110,11 @@ function materializeInlineChecks(checks, contextStore) {
     return out;
   });
 }
-function validateSources({ sourceIds, checks }, contextStore) {
+function validateSources({ sourceIds, checks }, contextStore, { allowInlineScript = false } = {}) {
   const known = new Set(contextStore?.listSources().map(source => source.id));
   if (sourceIds.some(id => !known.has(id))) throw new Error('Unknown source');
   for (const check of checks.filter(check => check.type === 'node_test')) {
-    if (contextStore === null && typeof check.testScript === 'string' && check.testScript.trim()) continue;
+    if (allowInlineScript && typeof check.testScript === 'string' && check.testScript.trim()) continue;
     if (!known.has(check.sourceId)) throw new Error('Unknown node_test source in task scope');
     validateTestSource(contextStore, check);
   }
@@ -127,7 +127,7 @@ function newTask(input, team, id = randomUUID()) {
   }
   return task;
 }
-function teamPlan(tasks, members) {
+function teamPlan(tasks, members, globalContextStore = null) {
   if (!Array.isArray(tasks) || tasks.length > 24) throw new Error('Plan tasks must be an array of up to 24 tasks');
   const names = new Set(members.map(member => member.name));
   if (tasks.length && names.size !== members.length) throw new Error('Plan member names must be unique');
@@ -140,7 +140,7 @@ function teamPlan(tasks, members) {
     if (dependencies.has(key)) throw new Error(`Duplicate plan task key: ${key}`);
     if (!names.has(member)) throw new Error(`Unknown plan task member for ${key}`);
     const input = taskInput(entry);
-    validateSources(input, null); // A new team has no registered sources.
+    validateSources(input, globalContextStore, { allowInlineScript: true });
     if (new Set(input.dependsOn).size !== input.dependsOn.length) throw new Error(`Duplicate plan dependency for ${key}`);
     dependencies.set(key, input.dependsOn);
     return { key, member, ...input };
@@ -247,7 +247,7 @@ export class Engine extends EventEmitter {
     if (sessionId !== undefined && sessionId !== null && (typeof sessionId !== 'string' || !sessionId.trim() || sessionId.length > 180)) throw new Error('Invalid sessionId');
     if (!Array.isArray(members) || members.length < 1 || members.length > 12 || members.some(member => !member || ['name', 'role', 'responsibility'].some(key => typeof member[key] !== 'string' || !member[key].trim()) || member.name.length > 100 || member.role.length > 200 || member.responsibility.length > 8000)) throw new Error('Team requires 1..12 members with bounded name, role and responsibility');
     const input = { name, goal, members: members.map(({ name, role, responsibility }) => ({ name, role, responsibility })) };
-    const plan = tasks === undefined ? undefined : teamPlan(tasks, input.members);
+    const plan = tasks === undefined ? undefined : teamPlan(tasks, input.members, this.contextStore);
     const fingerprint = hash(JSON.stringify(canonical(plan === undefined ? input : { ...input, tasks: plan })));
     const prior = this.store.teamRequest(requestId);
     if (prior) {
@@ -257,10 +257,10 @@ export class Engine extends EventEmitter {
     const cleanSessionId = typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : null;
     const team = { id: randomUUID(), requestId, ...clone(input), ...(cleanSessionId ? { sessionId: cleanSessionId } : {}), members: input.members.map(member => ({ id: randomUUID(), ...member })), control: 'pause', revision: 1, createdAt: now(), updatedAt: now() };
     let planned = [];
+    let teamStore = null;
     if (plan !== undefined) {
       const taskIds = new Map(plan.map(({ key }) => [key, randomUUID()]));
       const memberIds = new Map(team.members.map(({ name, id }) => [name, id]));
-      let teamStore = null;
       const ensureTeamStore = () => {
         if (!teamStore) {
           teamStore = new ContextStore(path.join(this.contextStore.rootDir, 'teams', team.id));
@@ -270,10 +270,24 @@ export class Engine extends EventEmitter {
       };
       team.planTasks = plan.map(({ key, member }) => ({ key, taskId: taskIds.get(key), memberId: memberIds.get(member) }));
       planned = plan.map(({ key, member, dependsOn, ...fields }) => {
-        const hasInline = fields.checks?.some(c => c.type === 'node_test' && typeof c.testScript === 'string');
-        const resolvedChecks = hasInline ? materializeInlineChecks(fields.checks, ensureTeamStore()) : fields.checks;
+        const hasNodeTests = fields.checks?.some(c => c.type === 'node_test');
+        let resolvedChecks = fields.checks;
+        if (hasNodeTests) {
+          const store = ensureTeamStore();
+          resolvedChecks = materializeInlineChecks(fields.checks, store);
+          for (const c of resolvedChecks) {
+            if (c.type === 'node_test' && c.sourceId) {
+              const teamKnown = new Set(store.listSources().map(s => s.id));
+              if (!teamKnown.has(c.sourceId)) {
+                const globalMeta = this.contextStore.listSources().find(s => s.id === c.sourceId);
+                const full = this.contextStore.readSource(c.sourceId, { limit: 16385 });
+                store.addSource({ text: full.text, label: globalMeta.label, kind: globalMeta.kind, critical: globalMeta.critical });
+              }
+            }
+          }
+        }
         const resolvedFields = { ...fields, checks: resolvedChecks };
-        if (hasInline) validateSources(resolvedFields, ensureTeamStore());
+        if (hasNodeTests) validateSources(resolvedFields, ensureTeamStore());
         const created = newTask({
           ...resolvedFields, teamId: team.id, memberId: memberIds.get(member), dependsOn: dependsOn.map(key => taskIds.get(key)),
         }, team, taskIds.get(key));
@@ -281,11 +295,24 @@ export class Engine extends EventEmitter {
         return created;
       });
     }
-    const changes = this.store.transaction(() => {
-      this.store.saveTeam(team);
-      this.store.addTeamRequest(requestId, fingerprint, team.id);
-      return planned.map(task => this._writeChange(task, 'submitted-to-queue'));
-    });
+    let changes;
+    try {
+      changes = this.store.transaction(() => {
+        this.store.saveTeam(team);
+        this.store.addTeamRequest(requestId, fingerprint, team.id);
+        return planned.map(task => this._writeChange(task, 'submitted-to-queue'));
+      });
+    } catch (error) {
+      if (teamStore) {
+        this.teamContexts.delete(team.id);
+        try {
+          fs.rmSync(teamStore.rootDir, { recursive: true, force: true });
+          const teamsParent = path.join(this.contextStore.rootDir, 'teams');
+          if (fs.existsSync(teamsParent) && fs.readdirSync(teamsParent).length === 0) fs.rmdirSync(teamsParent);
+        } catch {}
+      }
+      throw error;
+    }
     this.emit('change', { teamId: team.id, revision: team.revision, type: 'team-created', control: team.control });
     for (const change of changes) this.emit('change', change);
     return this.getTeam(team.id);
@@ -478,7 +505,16 @@ export class Engine extends EventEmitter {
     catch (error) { defaultModels = []; this.connectionError = error.message; }
     if (this.closed) return;
     const sessionModelsCache = new Map();
-    const activeScopeHolders = allTasks.filter(item => (executing.has(item.state) || item.executionUnresolved) && item.writeScopes?.length);
+    const scopedTeams = new Set(
+      allTasks
+        .filter(item => !['cancelled', 'abandoned'].includes(item.state) && item.writeScopes?.length)
+        .map(item => item.teamId ?? '__legacy__')
+    );
+    const effectiveMutexScopes = item => {
+      if (item.writeScopes?.length) return item.writeScopes;
+      return scopedTeams.has(item.teamId ?? '__legacy__') ? ['*'] : null;
+    };
+    const activeScopeHolders = allTasks.filter(item => (executing.has(item.state) || item.executionUnresolved) && effectiveMutexScopes(item));
     for (const candidate of ordered) {
       let task = this.store.get(candidate.id);
       if (!['queued', 'blocked'].includes(task.state) || !this._mayRun(task)) continue;
@@ -486,9 +522,10 @@ export class Engine extends EventEmitter {
       if (!task.dependsOn.every(id => this.store.get(id)?.state === 'accepted')) continue;
       const occupied = this.store.tasks().filter(item => executing.has(item.state) || item.executionUnresolved).length;
       if (occupied >= this.maxConcurrent) break;
-      if (task.writeScopes?.length) {
+      const candScopes = effectiveMutexScopes(task);
+      if (candScopes) {
         const teamScopeKey = task.teamId ?? '__legacy__';
-        const conflictHolder = activeScopeHolders.find(holder => holder.id !== task.id && (holder.teamId ?? '__legacy__') === teamScopeKey && taskScopesOverlap(holder.writeScopes, task.writeScopes));
+        const conflictHolder = activeScopeHolders.find(holder => holder.id !== task.id && (holder.teamId ?? '__legacy__') === teamScopeKey && taskScopesOverlap(effectiveMutexScopes(holder), candScopes));
         if (conflictHolder) {
           if (task.state !== 'blocked' || task.blockReason !== 'write-scope-lock') {
             task.state = 'blocked'; task.blockReason = 'write-scope-lock'; task.error = null;
@@ -538,7 +575,9 @@ export class Engine extends EventEmitter {
         const acceptance = task.checks.length ? `\n\nREQUIRED ARTIFACT ACCEPTANCE CHECKS\nProduce these files within this attempt workspace and satisfy every exact check below. These checks are required and are not excerpts.\n${JSON.stringify(task.checks)}\nEND REQUIRED ARTIFACT ACCEPTANCE CHECKS\n` : '';
         const team = task.teamId ? this._team(task.teamId) : null;
         const assignment = team ? `\n\nTEAM ASSIGNMENT\n${JSON.stringify({ id: team.id, name: team.name, goal: team.goal, member: team.members.find(member => member.id === task.memberId) })}\nEND TEAM ASSIGNMENT\n` : '';
-        const scopeSection = task.writeScopes?.length ? `\n\nWRITE SCOPE OWNERSHIP\nPrefer restricting edits and generated artifacts to your declared write scopes: ${JSON.stringify(task.writeScopes)}. Avoid modifying files owned by parallel teammates unless explicitly required.\nEND WRITE SCOPE OWNERSHIP\n` : '';
+        const scopeSection = task.writeScopes?.length
+          ? `\n\nWRITE SCOPE OWNERSHIP\nStrictly restrict all created and modified files within this attempt workspace (.) to your declared relative write scopes: ${JSON.stringify(task.writeScopes)}. Never write outside this attempt workspace via absolute paths or '..'; undeclared workspace files fail verification.\nEND WRITE SCOPE OWNERSHIP\n`
+          : `\n\nWORKSPACE ISOLATION\nKeep all created and modified files strictly inside this attempt workspace (.) using relative paths. Never modify external absolute paths.\nEND WORKSPACE ISOLATION\n`;
         const goal = task.goal;
         const priorFailureItems = (task.reworkPriorFailures ?? []).slice(0, 6).map(item => `- [${item.type}] ${item.path}: ${String(item.error ?? 'failed').slice(0, 180)}`);
         const priorFailureBlock = priorFailureItems.length ? `\nPrior verification failures to fix:\n${bounded(priorFailureItems.join('\n'), 1200).text}` : '';
@@ -575,7 +614,7 @@ export class Engine extends EventEmitter {
         // cannot prove that no dispatch intent was committed.
         preserveWorkspace = true;
         this._save(task, 'dispatch-intent', { packetBytes: packet.bytes, sourceIds });
-        if (task.writeScopes?.length) activeScopeHolders.push(task);
+        if (candScopes) activeScopeHolders.push(task);
         // This call immediately invokes adapter.start; no awaited gap after permission.
         this._dispatch(task, packet.text);
       } catch (error) {
@@ -1175,7 +1214,9 @@ export class Engine extends EventEmitter {
     this._save(current, 'recovery-deferred', { delayMs, readOnly: true });
   }
   async _inspectAttempt(task) {
-    const snapshot = task.executionKind === 'native' ? await this.nativeAdapter.inspectAttempt(task) : await this.adapter.inspect(task.threadId);
+    const snapshot = task.executionKind === 'native'
+      ? await this.nativeAdapter.inspectAttempt(task)
+      : await this.adapter.inspect(task.threadId, { turnId: task.turnId, attemptId: task.attemptId });
     const current = this._task(task.id);
     if (current.attemptId !== task.attemptId || !current.executionUnresolved) return current;
     if (current.executionKind === 'native' && snapshot.turnId && !current.turnId) {

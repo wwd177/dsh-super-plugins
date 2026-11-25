@@ -259,27 +259,49 @@ window.__ModuleLoader__.load({
             };
             window.addEventListener(OPEN_EVENT, onCustomOpen);
 
-            let lastSeq = 0;
+            let lastSeq = null;
+            let inFlight = false;
+            let currentAbort = null;
             let disposed = false;
             const apiBase = resolveEngineBase();
             const poll = async () => {
-              if (disposed || document.hidden) return;
+              if (disposed || inFlight || document.hidden) return;
+              inFlight = true;
+              const ac = typeof AbortController === 'function' ? new AbortController() : null;
+              currentAbort = ac;
               try {
-                const res = await fetch(`${apiBase}/api/changes?since=${lastSeq}`, { cache: 'no-store', credentials: 'same-origin' });
-                if (!res.ok) return;
+                const cursor = lastSeq === null ? -1 : lastSeq;
+                const res = await fetch(`${apiBase}/api/changes?since=${cursor}`, {
+                  cache: 'no-store',
+                  credentials: 'same-origin',
+                  ...(ac ? { signal: ac.signal } : {}),
+                });
+                if (!res.ok || disposed) return;
                 const data = await res.json();
+                if (disposed) return;
                 if (typeof data?.seq === 'number') {
-                  const wasInit = lastSeq > 0;
-                  lastSeq = data.seq;
-                  if (wasInit && Array.isArray(data.items)) {
+                  const wasSubscribed = lastSeq !== null;
+                  if (lastSeq === null || data.seq > lastSeq) {
+                    lastSeq = data.seq;
+                  }
+                  if (wasSubscribed && Array.isArray(data.items)) {
                     for (const item of data.items) {
+                      if (disposed) break;
                       if (item?.event === 'open-workbench') {
-                        triggerOpenWorkbench(item.payload?.sessionId ?? null, item.payload?.teamId ?? null);
+                        const targetSid = item.payload?.sessionId ?? null;
+                        if (targetSid && typeof ctx.sessions?.scope === 'function' && ctx.sessions.scope(targetSid) === undefined) {
+                          continue;
+                        }
+                        triggerOpenWorkbench(targetSid, item.payload?.teamId ?? null);
                       }
                     }
                   }
                 }
               } catch {}
+              finally {
+                if (currentAbort === ac) currentAbort = null;
+                inFlight = false;
+              }
             };
             poll();
             const timer = window.setInterval(poll, 1800);
@@ -287,6 +309,7 @@ window.__ModuleLoader__.load({
             return () => {
               disposed = true;
               window.clearInterval(timer);
+              try { currentAbort?.abort?.(); } catch {}
               window.removeEventListener(OPEN_EVENT, onCustomOpen);
             };
           }, 'superagent-workbench: auto-open listener');

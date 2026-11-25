@@ -12,18 +12,18 @@ Runs directly inside the DeepSeek Harness Cordis host process — **zero externa
 
 | Component | Package & Version | Role |
 | --- | --- | --- |
-| **SuperAgent Workflow & Delivery** | `@local/dsh-superagent-menu` (`1.21.0-dsh.1`) | Task decomposition, evidence-based routing, behavioral verification gates, and final integration methodology; includes `superagent-workflow`, `workflow-quality`, and `development-handoff` skills plus `+` menu actions |
-| **Super Teams Persistent Engine** | `@local/dsh-super-teams` (`0.13.0-dsh.1`) | Unified SQLite WAL critical-path DAG engine (`0.16.0-dsh.1`), 8 native tools, adaptive right-sidebar Team Workbench, and the `super-teams` skill |
-| **AI Agent Installer Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.0.0`) | Dedicated skill allowing any AI coding agent (DeepSeek Harness, Claude Code, Codex, Cursor, Windsurf, Antigravity, etc.) to safely install, verify, or uninstall both plugins |
+| **SuperAgent Workflow & Delivery** | `@local/dsh-superagent-menu` (`1.21.1-dsh.1`) | Task decomposition, evidence-based routing, behavioral verification gates, and final integration methodology; includes `superagent-workflow`, `workflow-quality`, and `development-handoff` skills plus `+` menu actions |
+| **Super Teams Persistent Engine** | `@local/dsh-super-teams` (`0.13.1-dsh.1`) | Unified SQLite WAL critical-path DAG engine (`0.16.1-dsh.1`), 8 native tools, adaptive right-sidebar Team Workbench, and the `super-teams` skill |
+| **AI Agent Installer Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.0.1`) | Dedicated skill allowing any AI coding agent (DeepSeek Harness, Claude Code, Codex, Cursor, Windsurf, Antigravity, etc.) to safely install, verify, or uninstall both plugins |
 
 ---
 
 ## Highlights
 
-- **Single Unified Persistent Store (`engine.sqlite` WAL)**: Teams, DAG waves, `ruling` decision ledgers, and SHA-256 artifact snapshots persist across DeepSeek Harness restarts with a clean 8-tool surface (`7 engine_*` + read-only `teams_engine`).
-- **Behavioral `autoAccept` Gate**: Blocks shallow `file_exists` / `file_contains` / `json_equals` checks from triggering `autoAccept: true`; requires at least one executable `node_test` check (supports inline `testScript`) exiting `0` before freezing snapshots and unlocking downstream waves.
-- **Two-Layer `writeScopes` Enforcement**: Combines a runtime scheduler mutex (`write-scope-lock`, serializing overlapping parallel tasks) with post-run workspace verification (`write_scope_guard`, rejecting undeclared out-of-scope files).
-- **Dual Right-Sidebar & Strict CSP Support**: Integrates natively with both stock `sidebarRightTabs` and `dsh-better-sidebar` using Shadow DOM + Constructable `CSSStyleSheet` and automatic dark/light theme sync.
+- **Single Unified Persistent Store (`engine.sqlite` WAL)**: Teams, DAG waves, `ruling` decision ledgers, and SHA-256 artifact snapshots persist across DeepSeek Harness restarts with turn-correlated resident & historical reconciliation and a clean 8-tool surface (`7 engine_*` + read-only `teams_engine`).
+- **Behavioral `autoAccept` Gate**: Blocks shallow `file_exists` / `file_contains` / `json_equals` checks from triggering `autoAccept: true`; requires at least one executable `node_test` check (supports inline `testScript` with isolated temp dir and minimal env) exiting `0` before freezing snapshots.
+- **Full-Lifecycle `writeScopes` Enforcement**: Combines a runtime scheduler mutex (`write-scope-lock`, serializing overlapping and unscoped tasks within scope-managed teams) with pre-check and post-check workspace verification (`write_scope_guard`, rejecting undeclared out-of-scope files and symlinks).
+- **Dual Right-Sidebar & Strict CSP Support**: Integrates natively with both stock `sidebarRightTabs` and `dsh-better-sidebar` using Shadow DOM + Constructable `CSSStyleSheet`, zero dropped cold-start auto-open events, and automatic dark/light theme sync.
 
 ---
 
@@ -52,7 +52,7 @@ Clone or extract this repository, then run from the repository root (automatical
   sh ./install.sh
   ```
 
-Restart **DeepSeek Harness** once after installation. Because packages and skills are copied into `~/.dsh/local-packages/dsh-super-plugins` and `~/.dsh/skills`, you may freely move or delete the cloned checkout afterwards.
+Restart **DeepSeek Harness** once after installation. Because packages and skills are atomically staged into `~/.dsh/local-packages/dsh-super-plugins` and `~/.dsh/skills`, you may freely move or delete the cloned checkout afterwards.
 
 ---
 

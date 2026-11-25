@@ -106,15 +106,28 @@ function sourceScript(store, check) {
 
 export function validateTestSource(store, check) { if (check.type === 'node_test') sourceScript(store, check); }
 
+const SAFE_ENV_KEYS = new Set([
+  'PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'SYSTEMDRIVE',
+  'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA',
+  'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TERM', 'COLORTERM', 'NODE_NO_WARNINGS',
+]);
+
 async function runNodeTest({ task, check, sourceStore, evidenceDir, filename }) {
   const script = sourceScript(sourceStore, check);
   const prefix = `node-test-${randomUUID()}`;
+  const testTmpDir = path.join(evidenceDir, `${prefix}-tmp`);
+  fs.mkdirSync(testTmpDir, { recursive: true });
   const files = Object.fromEntries(['stdout', 'stderr'].map(stream => [stream, path.join(evidenceDir, `${prefix}.${stream}.txt`)]));
   const descriptors = Object.fromEntries(Object.entries(files).map(([stream, file]) => [stream, fs.openSync(file, 'wx')]));
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) if (['NODE_OPTIONS', 'NODE_PATH'].includes(key.toUpperCase())) delete env[key];
+  const env = {};
+  for (const [key, val] of Object.entries(process.env)) {
+    if (val !== undefined && SAFE_ENV_KEYS.has(key.toUpperCase())) env[key] = val;
+  }
   // DeepSeek Harness Desktop uses Electron as process.execPath; force pure Node mode so node_test never opens a GUI window.
   env.ELECTRON_RUN_AS_NODE = '1';
+  env.TMP = testTmpDir;
+  env.TEMP = testTmpDir;
+  env.TMPDIR = testTmpDir;
   let bytes = 0, reason = null, code = null, signal = null;
   try {
     await new Promise(resolve => {
@@ -132,7 +145,10 @@ async function runNodeTest({ task, check, sourceStore, evidenceDir, filename }) 
       child.on('error', error => { reason = `node_test launch failed: ${error.message}`; });
       child.on('close', (exitCode, exitSignal) => { clearTimeout(timer); code = exitCode; signal = exitSignal; resolve(); });
     });
-  } finally { Object.values(descriptors).forEach(fd => fs.closeSync(fd)); }
+  } finally {
+    Object.values(descriptors).forEach(fd => fs.closeSync(fd));
+    try { fs.rmSync(testTmpDir, { recursive: true, force: true }); } catch {}
+  }
   const output = Object.fromEntries(Object.entries(files).map(([stream, file]) => {
     const data = fs.readFileSync(file);
     return [stream, { file, bytes: data.length, sha256: hash(data), preview: data.subarray(0, 4096).toString('utf8'), truncated: data.length > 4096 }];
@@ -176,36 +192,42 @@ function findOutOfScopeWorkspaceFiles(cwd, writeScopes) {
   const skipTop = new Set(['context-sources', 'dependencies', 'node_modules', '.git']);
   const violations = [];
   const walk = (dir, rel, depth) => {
-    if (depth > 8 || violations.length >= 16) return;
+    if (depth > 32) {
+      throw new Error(`Workspace directory nesting exceeds 32 levels at ${rel}; cannot certify writeScopes`);
+    }
+    if (violations.length >= 16) return;
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       if (violations.length >= 16) break;
       if (depth === 0 && skipTop.has(entry.name)) continue;
       const full = path.join(dir, entry.name);
       const childRel = rel ? `${rel}/${entry.name}` : entry.name;
-      let st;
-      try { st = fs.lstatSync(full, { bigint: true }); } catch { continue; }
+      const st = fs.lstatSync(full, { bigint: true });
       if (st.isSymbolicLink()) {
-        if (!pathMatchesWriteScopes(childRel, writeScopes)) violations.push(childRel);
+        violations.push(`${childRel} (symlink)`);
         continue;
       }
       if (st.isDirectory()) walk(full, childRel, depth + 1);
-      else if (st.isFile() && !pathMatchesWriteScopes(childRel, writeScopes)) violations.push(childRel);
+      else if (!pathMatchesWriteScopes(childRel, writeScopes)) violations.push(childRel);
     }
   };
   walk(root, '', 0);
   return violations;
 }
 
+function assertWriteScopesClean(task, checks, stageLabel) {
+  const scopeViolations = findOutOfScopeWorkspaceFiles(task.cwd, task.writeScopes);
+  if (scopeViolations.length) {
+    const msg = `Write scope violation (${stageLabel}): undeclared file(s) produced outside writeScopes (${task.writeScopes.join(', ')}): ${scopeViolations.join(', ')}`;
+    checks.push({ type: 'write_scope_guard', path: scopeViolations[0], stage: stageLabel, passed: false, error: msg, violations: scopeViolations });
+    throw new Error(msg);
+  }
+}
+
 export async function verifyArtifacts({ task, sourceStore, evidenceDir }) {
   const files = [], checks = [];
-  const result = () => ({ at: new Date().toISOString(), status: task.checks.length ? 'passed' : 'not_verified', passed: task.checks.length ? true : null, files, checks, artifactOnly: !task.checks.some(check => check.type === 'node_test'), hostCompletionStatus: task.completionStatus ?? null, scope: 'Registered checks and declared writeScopes were evaluated; caller acceptance is separate; node_test executes trusted registered code without an OS sandbox' });
+  const result = () => ({ at: new Date().toISOString(), status: task.checks.length ? 'passed' : 'not_verified', passed: task.checks.length ? true : null, files, checks, artifactOnly: !task.checks.some(check => check.type === 'node_test'), hostCompletionStatus: task.completionStatus ?? null, scope: 'Registered checks and declared writeScopes (pre-test and post-test) were evaluated; caller acceptance is separate; node_test executes trusted registered code without an OS sandbox' });
   try {
-    const scopeViolations = findOutOfScopeWorkspaceFiles(task.cwd, task.writeScopes);
-    if (scopeViolations.length) {
-      const msg = `Write scope violation: undeclared file(s) produced outside writeScopes (${task.writeScopes.join(', ')}): ${scopeViolations.join(', ')}`;
-      checks.push({ type: 'write_scope_guard', path: scopeViolations[0], passed: false, error: msg, violations: scopeViolations });
-      throw new Error(msg);
-    }
+    assertWriteScopesClean(task, checks, 'pre-check');
     for (const check of task.checks) {
       validateCheck(check);
       const filename = secureFile(task.cwd, check.path), measured = await hashArtifact(filename,{capture:['file_contains','json_equals'].includes(check.type)}),bytes=measured.data;
@@ -222,8 +244,9 @@ export async function verifyArtifacts({ task, sourceStore, evidenceDir }) {
       }
       files.push(record); checks.push({ type: check.type, path: check.path, passed: true, ...(evidence ? { evidence } : {}) });
     }
-    // A later test must not silently rewrite an earlier checked artifact.
+    // A later test must not silently rewrite an earlier checked artifact or leave out-of-scope files in task.cwd.
     if (!isDeepStrictEqual(await artifactFiles(task, files), files)) throw new Error('Artifact changed during verification');
+    assertWriteScopesClean(task, checks, 'post-check');
     return result();
   } catch (error) { error.verification = { ...result(), status: 'failed', passed: false, error: error.message }; throw error; }
 }

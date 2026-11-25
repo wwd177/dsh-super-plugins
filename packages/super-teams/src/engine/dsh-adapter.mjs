@@ -115,6 +115,88 @@ function snapshotEventsSafe(session) {
   return [];
 }
 
+const ATTEMPT_MARKER_RE = /<!--\s*superagent-attempt:([^:\s]+):([^>\s]*)\s*-->/;
+
+function extractEventTurnId(ev) {
+  if (!ev || typeof ev !== 'object') return null;
+  const d = ev.data ?? {};
+  const id = ev.turnId ?? d.turnId ?? d.messageId ?? d.turn?.id ?? null;
+  return typeof id === 'string' && id.trim() ? id.trim() : null;
+}
+
+function mapStopReasonToTerminalStatus(kind) {
+  if (kind === 'completed') return 'completed';
+  if (kind === 'error' || kind === 'blocked' || kind === 'max-tokens') return 'failed';
+  return null;
+}
+
+function extractTurnsFromDshEvents(events = [], { threadId, expectedTurnId = null, expectedAttemptId = null } = {}) {
+  if (!Array.isArray(events) || !events.length) return [];
+
+  // Segment events into turns ending at turn/end, agent/turn-end, or data.reason.kind, tracking per-segment attemptId & turnId
+  const segments = [];
+  let current = { explicitTurnId: null, attemptId: null, assistantTexts: [], endEvent: null };
+  let anyExplicitTurnId = false;
+
+  for (const ev of events) {
+    if (!ev || typeof ev !== 'object') continue;
+    const evTurnId = extractEventTurnId(ev);
+    if (evTurnId) {
+      anyExplicitTurnId = true;
+      if (current.explicitTurnId && current.explicitTurnId !== evTurnId && (current.assistantTexts.length || current.endEvent)) {
+        segments.push(current);
+        current = { explicitTurnId: evTurnId, attemptId: null, assistantTexts: [], endEvent: null };
+      } else {
+        current.explicitTurnId = evTurnId;
+      }
+    }
+    const data = ev.data ?? ev;
+    const msg = data?.message ?? (data?.role ? data : null);
+    if (msg?.role === 'user') {
+      const m = ATTEMPT_MARKER_RE.exec(extractTextBlocks(msg.content));
+      if (m && m[2]) current.attemptId = m[2];
+    } else if (msg?.role === 'assistant' && Array.isArray(msg.content)) {
+      const txt = extractTextBlocks(msg.content);
+      if (txt) current.assistantTexts.push(txt);
+    }
+    const isEnd = ev.type === 'turn/end' || ev.type === 'agent/turn-end' || Boolean(ev?.data?.reason?.kind);
+    if (isEnd) {
+      current.endEvent = ev;
+      segments.push(current);
+      current = { explicitTurnId: null, attemptId: null, assistantTexts: [], endEvent: null };
+    }
+  }
+
+  const terminalSegments = segments.filter(seg => {
+    if (!seg.endEvent) return false;
+    if (expectedAttemptId && seg.attemptId && seg.attemptId !== expectedAttemptId) return false;
+    return true;
+  });
+  if (!terminalSegments.length) return [];
+
+  // Attribute an untagged turn to expectedTurnId when either there is a single matching segment with no explicit turnId, or exact attemptId matched
+  const turns = [];
+  for (let i = 0; i < terminalSegments.length; i++) {
+    const seg = terminalSegments[i];
+    const kind = seg.endEvent?.data?.reason?.kind ?? seg.endEvent?.data?.status ?? null;
+    const terminalStatus = mapStopReasonToTerminalStatus(kind);
+    if (!terminalStatus) continue;
+    const canAttribute = !seg.explicitTurnId && (
+      (expectedAttemptId && seg.attemptId === expectedAttemptId) ||
+      (!anyExplicitTurnId && terminalSegments.length === 1)
+    );
+    const resolvedId = seg.explicitTurnId ?? (canAttribute ? (expectedTurnId || threadId) : `${threadId}:turn-${i + 1}`);
+    const lastText = seg.assistantTexts.at(-1) ?? '';
+    turns.push({
+      id: resolvedId,
+      status: terminalStatus,
+      items: lastText ? [{ type: 'agentMessage', text: lastText }] : [],
+      error: terminalStatus === 'failed' ? (seg.endEvent?.data?.reason?.message ?? `Turn ended with ${kind}`) : null,
+    });
+  }
+  return turns;
+}
+
 function formatStopFailure(result) {
   if (!result) return 'DeepSeek Harness subagent stopped without result';
   const diag = result.diagnostic;
@@ -135,6 +217,7 @@ export class DshAdapter {
     this.modelsCacheTtlMs = modelsCacheTtlMs;
     this._modelsCache = null;
     this.ownedThreads = new Set();
+    this.turnCorrelation = new Map();
     this.tasks = new Map();
     this.preferredSessionId = null;
     this.closed = false;
@@ -537,6 +620,9 @@ export class DshAdapter {
       maxDepth = subagents.resolveMaxDepth?.();
     } catch { maxDepth = undefined; }
 
+    const promptText = task.attemptId
+      ? `${task.prompt}\n\n<!-- superagent-attempt:${task.id}:${task.attemptId} -->`
+      : task.prompt;
     let receipt;
     try {
       receipt = await subagents.startActivation({
@@ -544,7 +630,7 @@ export class DshAdapter {
         parent: root,
         cwd: task.cwd,
         label: String(task.title || 'SuperAgent Task').slice(0, 80),
-        prompt: [{ type: 'text', text: task.prompt }],
+        prompt: [{ type: 'text', text: promptText }],
         ...(agentOptions ? { agentOptions } : {}),
         ...(maxDepth !== undefined ? { maxDepth } : {}),
         delivery: 'caller',
@@ -571,6 +657,7 @@ export class DshAdapter {
     const threadId = String(receipt.childId);
     const turnId = String(receipt.messageId ?? receipt.childId);
     this.ownedThreads.add(threadId);
+    this.turnCorrelation.set(threadId, { turnId, attemptId: task.attemptId ?? null });
     await onIdentity({ threadId, turnId });
     onEvent({ method: 'turn/started', params: { threadId, turnId, subagentName: receipt.name } });
 
@@ -656,15 +743,19 @@ export class DshAdapter {
     return { threadId, turnId, completion, interrupt };
   }
 
-  async inspect(threadId) {
+  async inspect(threadId, options = {}) {
     if (!this.ownedThreads.has(threadId)) {
       throw new Error('Refusing to inspect a session not started by this SuperAgent engine');
     }
+    const corr = this.turnCorrelation.get(threadId);
+    const expectedTurnId = options?.turnId ?? corr?.turnId ?? null;
+    const expectedAttemptId = options?.attemptId ?? corr?.attemptId ?? null;
     const { agents, sessionQuery } = this._services();
     const live = agents?.get?.(threadId);
     if (live?.session) {
       const events = snapshotEventsSafe(live.session);
-      return { id: threadId, resident: true, eventCount: events.length, turns: [] };
+      const turns = extractTurnsFromDshEvents(events, { threadId, expectedTurnId, expectedAttemptId });
+      return { id: threadId, resident: true, eventCount: events.length, turns };
     }
     if (!sessionQuery?.observeSession) {
       return { id: threadId, resident: false, turns: [] };
@@ -672,21 +763,11 @@ export class DshAdapter {
     const observed = await sessionQuery.observeSession(threadId, { signal: AbortSignal.timeout(5000) });
     try {
       const events = observed?.events ?? [];
-      const { lastAssistantText } = extractSessionUsageAndText(events);
-      const endEvent = [...events].reverse().find(ev => ev?.type === 'turn/end' || ev?.type === 'agent/turn-end' || ev?.data?.reason?.kind);
-      const kind = endEvent?.data?.reason?.kind;
-      const terminalStatus = kind === 'completed' ? 'completed' : (kind === 'error' || kind === 'blocked' || kind === 'max-tokens') ? 'failed' : null;
+      const turns = extractTurnsFromDshEvents(events, { threadId, expectedTurnId, expectedAttemptId });
       return {
         id: threadId,
         resident: false,
-        turns: terminalStatus
-          ? [{
-              id: threadId,
-              status: terminalStatus,
-              items: lastAssistantText ? [{ type: 'agentMessage', text: lastAssistantText }] : [],
-              error: terminalStatus === 'failed' ? (endEvent?.data?.reason?.message ?? `Turn ended with ${kind}`) : null,
-            }]
-          : [],
+        turns,
       };
     } finally {
       try { await observed?.[Symbol.asyncDispose]?.(); } catch { /* ignore */ }
