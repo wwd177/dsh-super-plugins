@@ -772,6 +772,68 @@ test('v0.16.1 P0/P1 regressions: turnId!=threadId reconciliation with negative c
         body: { maxConcurrent: 4 },
       });
       assert.equal(csrfRes.status, 403);
+
+      // 4. Dual-chat session isolation: session B opening its team MUST NOT deliver open-workbench to session A's SSE or /api/changes
+      const teamA = httpRt.engine.createTeam({
+        requestId: 'iso-team-a',
+        name: 'Team A',
+        goal: 'Session A goal',
+        sessionId: 'chat-A',
+        members: [{ name: 'A1', role: 'Dev', responsibility: 'Work A' }],
+      });
+      const teamB = httpRt.engine.createTeam({
+        requestId: 'iso-team-b',
+        name: 'Team B',
+        goal: 'Session B goal',
+        sessionId: 'chat-B',
+        members: [{ name: 'B1', role: 'Dev', responsibility: 'Work B' }],
+      });
+      const sseFramesA = [];
+      const sseFramesB = [];
+      const makeSseRes = bucket => ({
+        destroyed: false,
+        writableEnded: false,
+        writableLength: 0,
+        setHeader() {},
+        writeHead() {},
+        write(chunk) { bucket.push(String(chunk)); },
+        end() { this.writableEnded = true; },
+        destroy() { this.destroyed = true; },
+      });
+      const makeSseReq = url => {
+        const listeners = {};
+        return {
+          method: 'GET',
+          url,
+          headers: { host: '127.0.0.1:4321' },
+          on(ev, fn) { listeners[ev] = fn; },
+          close() { listeners.close?.(); },
+        };
+      };
+      const reqSseA = makeSseReq('/superagent-engine/api/stream?sessionId=chat-A');
+      const reqSseB = makeSseReq('/superagent-engine/api/stream?sessionId=chat-B');
+      await httpRt.router.handler(reqSseA, makeSseRes(sseFramesA));
+      await httpRt.router.handler(reqSseB, makeSseRes(sseFramesB));
+
+      const beforeB = (await callRouter({ url: '/superagent-engine/api/changes?since=-1&sessionId=chat-A' })).json.seq;
+      httpRt.router.notifyWorkbenchOpen({ sessionId: 'chat-B', teamId: teamB.id });
+
+      // Session A must NEVER receive session B's open-workbench via SSE or scoped /api/changes
+      assert.equal(sseFramesA.some(f => f.includes('event: open-workbench')), false, 'Session A SSE must not receive session B open-workbench');
+      assert.equal(sseFramesB.some(f => f.includes('event: open-workbench') && f.includes(teamB.id)), true, 'Session B SSE must receive its own open-workbench');
+
+      const pollA = await callRouter({ url: `/superagent-engine/api/changes?since=${beforeB}&sessionId=chat-A` });
+      assert.equal(pollA.json.items.some(i => i.event === 'open-workbench'), false, 'Scoped /api/changes for session A must filter out session B open-workbench');
+
+      const pollB = await callRouter({ url: `/superagent-engine/api/changes?since=${beforeB}&sessionId=chat-B` });
+      assert.equal(pollB.json.items.some(i => i.event === 'open-workbench' && i.payload?.teamId === teamB.id), true, 'Scoped /api/changes for session B must receive its open-workbench');
+
+      // Window-level coordinator poll (without sessionId) still receives tagged event so client.js can open B's dock
+      const pollCoordinator = await callRouter({ url: `/superagent-engine/api/changes?since=${beforeB}` });
+      assert.equal(pollCoordinator.json.items.some(i => i.event === 'open-workbench' && i.payload?.sessionId === 'chat-B' && i.payload?.teamId === teamB.id), true);
+      assert.ok(teamA.id !== teamB.id);
+      reqSseA.close();
+      reqSseB.close();
     } finally {
       await httpRt.close();
       fs.rmSync(httpDir, { recursive: true, force: true });

@@ -2,7 +2,7 @@
 
 [中文说明](README.md) · [AI Agent Installer Skill](skills/dsh-super-plugins-installer/SKILL.md) · [Changelog](CHANGELOG.md)
 
-Native multi-agent critical-path DAG orchestration engine, behavioral test gate, runtime write-scope mutex, and right-sidebar **Team Workbench** for **DeepSeek Harness (`0.2.x` on Windows, macOS, and Linux)**.
+Native multi-agent critical-path DAG orchestration engine, hardened `git-worktree` collaboration & atomic branch publishing, polyglot behavioral test gates, runtime write-scope mutex, and session-isolated right-sidebar **Team Workbench** for **DeepSeek Harness (`0.2.x` on Windows, macOS, and Linux)**.
 
 Runs directly inside the DeepSeek Harness Cordis host process — **zero external daemons, zero separate MCP subprocesses, and zero global npm installs required**.
 
@@ -12,18 +12,19 @@ Runs directly inside the DeepSeek Harness Cordis host process — **zero externa
 
 | Component | Package & Version | Role |
 | --- | --- | --- |
-| **SuperAgent Workflow & Delivery** | `@local/dsh-superagent-menu` (`1.22.0-dsh.1`) | Task decomposition, evidence-based routing, polyglot behavioral verification gates, and Git worktree integration methodology; includes `superagent-workflow`, `workflow-quality`, and `development-handoff` skills plus `+` menu actions |
-| **Super Teams Persistent Engine** | `@local/dsh-super-teams` (`0.14.0-dsh.1`) | Unified SQLite WAL critical-path DAG engine (`0.17.0-dsh.1`), hardened `git-worktree` mode with atomic branch merge, polyglot `command_test` gate, 8 native tools, adaptive right-sidebar Team Workbench, and the `super-teams` skill |
-| **AI Agent Installer Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.0.1`) | Dedicated skill allowing any AI coding agent (DeepSeek Harness, Claude Code, Codex, Cursor, Windsurf, Antigravity, etc.) to safely install, verify, or uninstall both plugins |
+| **SuperAgent Workflow & Delivery** | `@local/dsh-superagent-menu` (`1.22.1-dsh.1`) | Task decomposition, evidence-based routing, polyglot behavioral verification gates, and Git worktree integration methodology; includes `superagent-workflow`, `workflow-quality`, and `development-handoff` skills plus `+` menu actions |
+| **Super Teams Persistent Engine** | `@local/dsh-super-teams` (`0.14.1-dsh.1`) | Unified SQLite WAL critical-path DAG engine (`0.17.1-dsh.1`), hardened `git-worktree` mode with atomic branch merge, polyglot `command_test` gate, 8 native tools, session-isolated right-sidebar Team Workbench, and the `super-teams` skill |
+| **AI Agent Installer Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.1.1`) | Dedicated skill allowing any AI coding agent (DeepSeek Harness, Claude Code, Codex, Cursor, Windsurf, Antigravity, etc.) to safely install, verify, or uninstall both plugins |
 
 ---
 
 ## Highlights
 
-- **Single Unified Persistent Store (`engine.sqlite` WAL)**: Teams, DAG waves, `ruling` decision ledgers, and SHA-256 artifact snapshots persist across DeepSeek Harness restarts with turn-correlated resident & historical reconciliation and a clean 8-tool surface (`7 engine_*` + read-only `teams_engine`).
-- **Behavioral `autoAccept` Gate**: Blocks shallow `file_exists` / `file_contains` / `json_equals` checks from triggering `autoAccept: true`; requires at least one executable `node_test` check (supports inline `testScript` with isolated temp dir and minimal env) exiting `0` before freezing snapshots.
-- **Full-Lifecycle `writeScopes` Enforcement**: Combines a runtime scheduler mutex (`write-scope-lock`, serializing overlapping and unscoped tasks within scope-managed teams) with pre-check and post-check workspace verification (`write_scope_guard`, rejecting undeclared out-of-scope files and symlinks).
-- **Dual Right-Sidebar & Strict CSP Support**: Integrates natively with both stock `sidebarRightTabs` and `dsh-better-sidebar` using Shadow DOM + Constructable `CSSStyleSheet`, zero dropped cold-start auto-open events, and automatic dark/light theme sync.
+- **Unified Persistent Engine Data Directory**: Metadata and event logs live in `~/.dsh/profiles/<profile>/plugin-data/dsh-super-teams/engine.sqlite` (SQLite WAL), while frozen SHA-256 deliverables, verified Git patches, registered sources, and active run directories live alongside it in `artifact-snapshots/`, `git-patches/`, `context/`, and `attempts/`.
+- **Hardened `git-worktree` Mode & Sidebar UI Controls**: Create `git-worktree` teams either via tool parameters (`workspaceMode: "git-worktree"`, `repoPath`) or directly in the right-sidebar **New Team** modal, then run `merge_preview` and atomic create-only `merge_apply` (`superagent/<slug>`) directly from the overview without touching the user's active working tree.
+- **Tiered Behavioral Gates (`node_test` + Polyglot `command_test`)**: Blocks shallow static checks and mutable repo commands from triggering `autoAccept: true`; `autoAccept` requires an immutable `ContextStore`-hosted `node_test`, while structured polyglot `command_test` runners (`node --test`, `pytest`, `cargo test`, `go test`, `dotnet test`, `npm test`) verify behavior to `checked` for explicit review.
+- **Full-Lifecycle `writeScopes` Enforcement**: Combines a runtime scheduler mutex (`write-scope-lock`) with pre/post workspace checks (isolated mode) and two-tree `<attemptStartCommit>..<candidateCommit>` diff certification (`git-worktree` mode), rejecting undeclared files, renames, deletions, symlinks, and Windows junctions.
+- **Dual Right-Sidebar & Strict Multi-Chat Isolation**: Integrates natively with stock `sidebarRightTabs` and `dsh-better-sidebar` using Shadow DOM + Constructable `CSSStyleSheet`. Server SSE/changes streams, `client.js`, and `app.js` all isolate `open-workbench` events by `sessionId` so opening chat B's team never hijacks chat A's mounted workbench.
 
 ---
 
@@ -56,18 +57,20 @@ Restart **DeepSeek Harness** once after installation. Because packages and skill
 
 ---
 
-## Verify, Upgrade & Uninstall
+## Verify, Backup & Uninstall
 
 ```bash
 # Non-destructive health & SHA-256 parity check
 node ./scripts/install.mjs --verify
 
-# Clean uninstall (preserves engine.sqlite history unless --purge-data is passed)
+# Clean uninstall (preserves the entire plugin-data/dsh-super-teams/ directory unless --purge-data is passed)
 node ./scripts/install.mjs --uninstall
 
-# Run unit, persistence, behavioral gate & write-scope mutex regression suites
-node --test ./tests/dsh-runtime.test.mjs ./tests/board.test.mjs
+# Run unit, persistence, behavioral gate, git-worktree & polyglot regression suites
+node --test ./tests/dsh-runtime.test.mjs ./tests/board.test.mjs ./tests/v0170-worktree-polyglot.test.mjs
 ```
+
+> **Important Backup Note (Do NOT Copy Only `engine.sqlite`)**: `engine.sqlite` stores metadata, event logs, and hash indexes only — it does **not** embed frozen deliverable files or Git patches. To preserve deliverables and patches safely, close DeepSeek Harness first and back up the **entire `~/.dsh/profiles/<profile>/plugin-data/dsh-super-teams/` directory** (`engine.sqlite`, `-wal`/`-shm`, `artifact-snapshots/`, `git-patches/`, `context/`, and `attempts/`).
 
 ## License
 

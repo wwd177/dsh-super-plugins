@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Super Teams",
-    "description": "Unified SQLite WAL critical-path DAG orchestration engine (0.17.0-dsh.1), hardened git-worktree mode, polyglot command_test behavioral gate, runtime write-scope mutex, and right-sidebar Team Workbench."
+    "description": "Unified SQLite WAL critical-path DAG orchestration engine (0.17.1-dsh.1), hardened git-worktree mode, polyglot command_test behavioral gate, runtime write-scope mutex, and session-isolated right-sidebar Team Workbench."
   }
 }

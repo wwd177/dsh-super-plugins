@@ -1,14 +1,14 @@
 ---
 name: dsh-super-plugins-installer
 metadata:
-  version: 1.1.0
+  version: 1.1.1
   targets: DeepSeek Harness (>=0.2.0-rc.1 <0.3.0-0)
 description: Install, upgrade, verify, or uninstall the SuperAgent (@local/dsh-superagent-menu) and Super Teams (@local/dsh-super-teams) plugins plus their 4 companion skills into DeepSeek Harness on Windows, macOS, or Linux. Use whenever a user asks an AI agent to install, update, repair, check, or remove SuperAgent / Super Teams / dsh-super-plugins for DeepSeek Harness.
 ---
 
 # DeepSeek Harness · SuperAgent & Super Teams Installer Skill
 
-Follow this deterministic, non-destructive playbook to install **both** plugins (`@local/dsh-superagent-menu` `1.22.0-dsh.1` and `@local/dsh-super-teams` `0.14.0-dsh.1`, powered by persistent SQLite WAL Engine `0.17.0-dsh.1`) and their **4 companion skills** (`superagent-workflow`, `workflow-quality`, `development-handoff`, `super-teams`) into a user's local **DeepSeek Harness** (`0.2.x`) installation on **Windows, macOS, or Linux**.
+Follow this deterministic, non-destructive playbook to install **both** plugins (`@local/dsh-superagent-menu` `1.22.1-dsh.1` and `@local/dsh-super-teams` `0.14.1-dsh.1`, powered by persistent SQLite WAL Engine `0.17.1-dsh.1`) and their **4 companion skills** (`superagent-workflow`, `workflow-quality`, `development-handoff`, `super-teams`) into a user's local **DeepSeek Harness** (`0.2.x`) installation on **Windows, macOS, or Linux**.
 
 ## Mandatory Safety Guardrails
 
@@ -88,7 +88,7 @@ Verify all 3 conditions from the JSON output before declaring success:
 
 1. If you created a temporary `git clone` directory in Step 1, remove that temporary directory now (the installed plugins and skills inside `~/.dsh` are 100% self-contained and do not depend on the checkout directory).
 2. Report concisely to the user:
-   - **Installed components**: `SuperAgent 1.22.0-dsh.1`, `Super Teams 0.14.0-dsh.1` (SQLite WAL `Engine 0.17.0-dsh.1`), and 4 verified skills.
+   - **Installed components**: `SuperAgent 1.22.1-dsh.1`, `Super Teams 0.14.1-dsh.1` (SQLite WAL `Engine 0.17.1-dsh.1`), and 4 verified skills.
    - **Backup directory**: Path from `"backup"` in Step 3's JSON output.
    - **Next action required from user**: **Restart DeepSeek Harness once** to load the new plugins and right-sidebar「团队工作台」(Team Workbench), then type `/superagent-workflow` or click `+` → `SuperAgent 团队工作台` in any chat session.
 
@@ -96,8 +96,8 @@ Verify all 3 conditions from the JSON output before declaring success:
 
 ## Upgrade & Uninstall Commands
 
-- **Upgrade**: Pull or download the newer release and re-run Step 3 + Step 4 (`scripts/install.mjs` idempotently backs up the prior state, updates `local-packages`, refreshes all 4 skills, and preserves existing `engine.sqlite` team data).
-- **Clean Uninstall (preserves team history in `engine.sqlite`)**:
+- **Upgrade**: Pull or download the newer release and re-run Step 3 + Step 4 (`scripts/install.mjs` idempotently backs up the prior state, updates `local-packages`, refreshes all 4 skills, and preserves the existing `plugin-data/dsh-super-teams/` data directory including `engine.sqlite`, `artifact-snapshots/`, `git-patches/`, and `context/`).
+- **Clean Uninstall (preserves the entire `plugin-data/dsh-super-teams/` history & deliverables directory)**:
   - Windows: `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall -Json`
   - macOS / Linux: `sh ./install.sh --uninstall --json`
-  - *(Only pass `-PurgeData` / `--purge-data` if the user explicitly asks to delete all saved teams and snapshots in `plugin-data/dsh-super-teams`.)*
+  - *(Only pass `-PurgeData` / `--purge-data` if the user explicitly asks to delete all saved teams, snapshots, and patches in `plugin-data/dsh-super-teams`.)*

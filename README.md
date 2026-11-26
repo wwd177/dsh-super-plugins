@@ -2,7 +2,7 @@
 
 [English README](README.en.md) · [AI 智能体自动安装 Skill](skills/dsh-super-plugins-installer/SKILL.md) · [更新日志](CHANGELOG.md)
 
-面向 **DeepSeek Harness (`0.2.x`，支持 Windows / macOS / Linux 全平台)** 的原生多智能体关键路径波次编排引擎、行为测试验收门禁、写入范围互斥锁与右侧「团队工作台」套件。
+面向 **DeepSeek Harness (`0.2.x`，支持 Windows / macOS / Linux 全平台)** 的原生多智能体关键路径波次编排引擎、Git Worktree 协作与原子分支发布、多语言行为测试验收门禁、写入范围互斥锁与会话隔离右侧「团队工作台」套件。
 
 直接运行于 DeepSeek Harness 宿主 Cordis 进程内，**零外部守护服务、零独立 MCP 子进程、零全局 npm 依赖安装**。
 
@@ -12,24 +12,29 @@
 
 | 组件 | 包名与版本 | 核心职责 |
 | --- | --- | --- |
-| **SuperAgent 协作与交付** | `@local/dsh-superagent-menu` (`1.22.0-dsh.1`) | 复杂任务拆解、证据选路、多语言行为测试门禁与 Git Worktree 集成方法论；内置 `superagent-workflow`、`workflow-quality`、`development-handoff` 3 套技能与聊天「＋」快捷菜单 |
-| **Super Teams 持久编排引擎** | `@local/dsh-super-teams` (`0.14.0-dsh.1`) | 内置 SQLite WAL 持久关键路径 DAG 编排引擎 (`0.17.0-dsh.1`)、Git Worktree 模式与原子分支合并、`command_test` 多语言门禁、8 个统一原生工具、自适应右侧「团队工作台」与 `super-teams` 技能 |
-| **AI 智能体专用安装 Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.0.1`) | 供其他 AI 智能体（DeepSeek Harness / Claude Code / Codex / Cursor / Antigravity 等）自动完成全平台检测、备份、自包含安装与哈希校验 |
+| **SuperAgent 协作与交付** | `@local/dsh-superagent-menu` (`1.22.1-dsh.1`) | 复杂任务拆解、证据选路、多语言行为测试门禁与 Git Worktree 集成方法论；内置 `superagent-workflow`、`workflow-quality`、`development-handoff` 3 套技能与聊天「＋」快捷菜单 |
+| **Super Teams 持久编排引擎** | `@local/dsh-super-teams` (`0.14.1-dsh.1`) | 内置 SQLite WAL 持久关键路径 DAG 编排引擎 (`0.17.1-dsh.1`)、Git Worktree 模式与原子分支合并、`command_test` 多语言门禁、8 个统一原生工具、会话隔离右侧「团队工作台」与 `super-teams` 技能 |
+| **AI 智能体专用安装 Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.1.1`) | 供其他 AI 智能体（DeepSeek Harness / Claude Code / Codex / Cursor / Antigravity 等）自动完成全平台检测、备份、自包含安装与哈希校验 |
 
 ---
 
 ## 核心特性
 
-1. **单一团队、单一持久状态库（跨重启精确对账恢复）**：
-   - 团队、DAG 波次、成员结果、`ruling` 架构裁决账本与 SHA-256 产物快照统一落盘于 `~/.dsh/profiles/desktop/plugin-data/dsh-super-teams/engine.sqlite`（SQLite WAL 模式），重启后支持驻留/历史会话双分支 `turnId` 精确对账恢复。
+1. **单一团队、单一持久数据目录（跨重启精确对账恢复）**：
+   - 团队与任务元数据、事件日志存储于 `~/.dsh/profiles/<profile>/plugin-data/dsh-super-teams/engine.sqlite`（SQLite WAL 模式），而冻结交付文件快照、Git 增量补丁、登记来源与运行工作区分别存储在同目录的 `artifact-snapshots/`、`git-patches/`、`context/` 与 `attempts/` 中；重启后支持驻留/历史会话双分支 `turnId` 精确对账恢复。
    - 默认仅暴露 **8 个统一工具**（`engine_workspace`、`engine_team`、`engine_submit`、`engine_overview`、`engine_control`、`engine_source`、`engine_evidence` 及同源只读视图 `teams_engine`），避免双任务板分裂。
-2. **`autoAccept: true` 强制可执行行为测试门禁**：
-   - 禁止仅靠 `file_exists` / `file_contains` / `json_equals` 等静态检查开启自动放行；必须至少配有一条 `node_test` 行为断言（支持在 `prepare` / `engine_submit` 中直接内联 `testScript`，并提供独立临时目录与最小化运行环境），退出码 `0` 且交付树无越界文件才冻结快照。
-3. **`writeScopes` 全链路强约束（同队互斥锁 + 测前/测后双重越界拦截）**：
-   - 启用 `writeScopes` 的团队自动对重叠范围及未声明范围任务施加运行时互斥锁（`write-scope-lock`）串行排队；验收器在执行测试前与执行测试后双重扫描工作区，拦截任何越界产物或符号链接（`write_scope_guard`）。
-4. **双右侧栏无缝兼容与冷启动首事件零丢失**：
-   - 同时支持官方右侧栏（`sidebarRightTabs`）与社区 `dsh-better-sidebar`，采用 Shadow DOM + Constructable `CSSStyleSheet` 隔离样式，支持冷启动首次建队即刻自动弹出工作台并跟随深浅色主题切换。
-5. **模型允许列表尊重与推理档位预检**：
+2. **强化 `git-worktree` 协作模式与侧栏建队/合并入口**：
+   - 支持在工具（`workspaceMode: "git-worktree"` + `repoPath`）**以及右侧工作台「新建团队」标准表单**中直接创建 Git Worktree 团队：建队锁定 `baseCommit`，任务在独立 detached worktree 中并行开发并按传递闭环自动重放上游增量补丁。
+   - 工作台概览内置「预览 Git 合并（`merge_preview`）」与「原子发布到新分支（`merge_apply` → 仅新建 `superagent/<slug>` 分支，绝不改写当前活工作树或既有分支）」，导出 ZIP 自动包含 `DELIVERY.md`、`HANDOFF.md` 与 `changes.patch`。
+3. **分级可执行行为测试门禁（`node_test` + 多语言 `command_test`）**：
+   - 禁止仅靠 `file_exists` / `file_contains` / `json_equals` 等静态检查或 `command_test` 开启 `autoAccept: true`；自动验收必须至少配有一条不可变 `ContextStore` 托管的 `node_test` 行为断言（支持内联 `testScript`）。
+   - 支持结构化多语言 `command_test`（`node --test`、`pytest`、`python -m pytest|unittest`、`cargo test`、`go test`、`dotnet test`、`npm test` / `npm run test[:*]`），在 `.git`-free 导出目录运行并拦截危险注入标志与零用例假绿，通过后进入 `checked` 供显式 `accept` 复核。
+4. **`writeScopes` 全链路强约束（同队互斥锁 + 测前/测后或双树 Diff 越界拦截）**：
+   - 启用 `writeScopes` 的团队自动对重叠范围及未声明范围任务施加运行时互斥锁（`write-scope-lock`）串行排队；隔离模式执行测前/测后双重扫描，`git-worktree` 模式以临时索引封存 `candidateCommit` 并对 `<attemptStartCommit>..<candidateCommit>` 做 `--raw --find-renames -z` 双树审计，拦截越界改动、重命名、删除、符号链接与 Windows 目录联结（`write_scope_guard`）。
+5. **双右侧栏无缝兼容与多聊天会话严格隔离**：
+   - 同时支持官方右侧栏（`sidebarRightTabs`）与社区 `dsh-better-sidebar`，采用 Shadow DOM + Constructable `CSSStyleSheet` 隔离样式、跟随深浅色主题切换。
+   - 服务端 SSE/变更流、宿主壳层与工作台三层均按 `sessionId` 严格路由，多聊天并行打开各自团队时绝不串切已挂载面板。
+6. **模型允许列表尊重与推理档位预检**：
    - 绝不改动用户主会话模型与推理设置；子代理严格遵循会话 `subagentModelSelectionPolicy` 允许列表，并通过 `llm.resolveCallConfig` 自动预检回退不支持 `reasoningEffort` 的模型。
 
 ---
@@ -70,24 +75,26 @@
    ```text
    /superagent-workflow 组建团队完成以下目标：设计接口契约、实现核心模块并通过行为测试验收
    ```
-2. 当主代理调用 `engine_team({action:"prepare", ...})` 时，右侧栏会自动展开 **「团队工作台」**，展示拓扑波次图、关键路径（CPM）、成员实时活动、产物预览、一键打回返工（`rework`）与 ZIP 交付包导出。
+2. 当主代理调用 `engine_team({action:"prepare", ...})` 时，当前会话右侧栏会自动展开 **「团队工作台」**；你也可以直接在工作台点击 **「新建团队」**，选择 **隔离工作目录** 或 **Git Worktree（真实仓库隔离分支）** 模式。
 
 ---
 
-## 校验、升级与卸载
+## 校验、完整备份与卸载
 
 ```bash
 # 无损完整性校验（验证插件挂载、实体技能目录与逐文件 SHA-256）
 node ./scripts/install.mjs --verify
 
-# 干净卸载插件与 4 套技能（默认保留 engine.sqlite 历史团队数据；加 --purge-data 连同数据一并清理）
+# 干净卸载插件与 4 套技能（默认保留整个 plugin-data/dsh-super-teams/ 历史数据目录；加 --purge-data 连同数据一并清理）
 node ./scripts/install.mjs --uninstall
 
-# 运行单元、跨重启对账、行为门禁与写入互斥锁回归测试（需 Node >=22.13）
-node --test ./tests/dsh-runtime.test.mjs ./tests/board.test.mjs
+# 运行单元、跨重启对账、行为门禁、Git Worktree 与多语言测试回归套件（需 Node >=22.13）
+node --test ./tests/dsh-runtime.test.mjs ./tests/board.test.mjs ./tests/v0170-worktree-polyglot.test.mjs
 ```
 
-> **安全与验证边界说明**：每次安装会自动在 `~/.dsh/profile-backups/dsh-super-plugins/` 生成独立回滚快照，绝不触碰 `.credentials.yaml`、`.env` 或其他已装插件。`node_test` 与工作区 `writeScopes` 扫描运行于当前用户权限下，不构成操作系统内核级沙箱。
+> **完整备份警告（切勿只复制 `engine.sqlite`）**：`engine.sqlite` 仅保存团队与任务元数据及哈希索引；真实已验收交付快照、Git 补丁、登记来源与任务工作区分别存放在同目录的 `artifact-snapshots/`、`git-patches/`、`context/` 与 `attempts/` 中。备份或迁移数据时，请先退出 DeepSeek Harness，再**完整复制整个 `~/.dsh/profiles/<profile>/plugin-data/dsh-super-teams/` 目录**（包含 `engine.sqlite` 及 `-wal`/`-shm` 与全部子目录），仅复制单个 SQLite 文件会丢失所有交付文件。
+>
+> **安全与验证边界说明**：每次安装会自动在 `~/.dsh/profile-backups/dsh-super-plugins/` 生成独立回滚快照，绝不触碰 `.credentials.yaml`、`.env` 或其他已装插件。`node_test`、`command_test` 与工作区 `writeScopes` 扫描运行于当前用户权限下，不构成操作系统内核级沙箱。
 
 ## 开源许可
 

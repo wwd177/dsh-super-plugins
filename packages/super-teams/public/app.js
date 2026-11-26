@@ -541,8 +541,17 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
       const state = team.control === 'cancel' ? 'cancelled' : team.control === 'pause' ? 'paused' : 'running';
       const label = (team.archived ? '已归档 · ' : '') + (team.control === 'pause' ? (tasks.length ? '已暂停' : '筹备中') : team.control === 'cancel' ? '已取消' : '协作已开启');
       top.append(badge(state, label));
+      if (team.workspaceMode === 'git-worktree') {
+        top.append(node('span', 'Git Worktree' + (team.baseCommit ? ' · ' + team.baseCommit.slice(0, 7) : ''), 'mini-tag auto'));
+      }
     }
     box.append(top, node('p', legacy ? '保留原有任务的记录、检查和验收入口。' : team.goal || '目标尚未记录', 'goal'));
+    if (!legacy && team.workspaceMode === 'git-worktree') {
+      const gitLine = 'Git 仓库模式 · 基线 ' + (team.baseCommit ? team.baseCommit.slice(0, 12) : '未知')
+        + (team.baseBranch ? ' (' + team.baseBranch + ')' : '')
+        + (team.lastMerge?.branch ? ' · 已发布分支 ' + team.lastMerge.branch : ' · 尚未合并发布');
+      box.append(node('p', gitLine, 'meta'));
+    }
     if (tasks.length) {
       const acceptedCount = tasks.filter(t => t.state === 'accepted').length, pct = Math.round((acceptedCount / tasks.length) * 100);
       const pw = node('div', undefined, 'progress-wrap'), pm = node('div', undefined, 'progress-meta');
@@ -614,9 +623,37 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
       exportButton.dataset.unavailable = String(!tasks.some(task => task.state === 'accepted'));
       exportButton.title = tasks.some(task => task.state === 'accepted') ? '下载固定快照成果和团队交付清单' : '暂无已验收任务';
       controls.append(exportButton);
+      if (team.workspaceMode === 'git-worktree') {
+        const hasAccepted = tasks.some(task => task.state === 'accepted');
+        const previewBtn = button('预览 Git 合并', () => previewGitMerge(team.id), 'merge:' + team.id);
+        previewBtn.dataset.unavailable = String(!hasAccepted);
+        previewBtn.title = hasAccepted ? '在独立临时 worktree 重放已验收补丁并检查冲突，不修改当前分支' : '暂无已验收任务';
+        controls.append(previewBtn);
+      }
       controls.append(button('查看待处理任务', () => loadAttentionPage()));
       controls.append(button(team.archived ? '取消归档' : '归档团队', () => archiveTeam(team.id, !team.archived), key, 'quiet'));
       box.append(controls);
+      if (team.workspaceMode === 'git-worktree') {
+        const hasAccepted = tasks.some(task => task.state === 'accepted');
+        const mergePanel = technical('Git Worktree 合并与分支发布（仅新建 superagent/*）', 'git-merge:' + team.id);
+        mergePanel.append(node('p', '在临时 detached staging worktree 重放全部已验收任务的冻结补丁，通过后以原子 create-only 方式发布到全新 superagent/<slug> 分支，绝不改动当前活工作树与既有分支。', 'hint'));
+        const branchLabel = node('label', '目标分支后缀（可选，自动加 superagent/ 前缀）');
+        const branchInput = node('input');
+        branchInput.type = 'text';
+        branchInput.maxLength = 64;
+        branchInput.placeholder = '例如：release-v1（留空则自动生成）';
+        branchInput.dataset.mergeBranch = team.id;
+        branchLabel.append(branchInput);
+        const mergeActions = node('div', undefined, 'actions');
+        const applyBtn = button('原子发布到新分支', () => applyGitMerge(team.id, branchInput.value.trim() || null), 'merge:' + team.id, 'primary-good');
+        applyBtn.dataset.unavailable = String(!hasAccepted);
+        mergeActions.append(
+          button('仅预览冲突与 Diff', () => previewGitMerge(team.id), 'merge:' + team.id),
+          applyBtn,
+        );
+        mergePanel.append(branchLabel, mergeActions);
+        box.append(mergePanel);
+      }
       if (attentionPage?.scope === scopeSequence) box.append(attentionPage.panel);
       box.append(node('p', '导出会列明未完成事项；主项目集成需另行确认。分享前请检查文件中的敏感内容。', 'hint audit-note'));
       if (missing) box.append(node('p', missing + ' 位成员尚未分配任务。开始时先逐一创建任务，全部保存成功后运行。', 'scope-note'));
@@ -631,6 +668,22 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
     const r = await api('/teams/' + encodeURIComponent(id) + '/accept-checked', 'POST', { actor: 'dsh-workbench:batch-reviewer' });
     const ok = (r.accepted || []).length, fail = (r.failed || []).length;
     notice(fail ? '已批量验收 ' + ok + ' 项，' + fail + ' 项失败：\n' + r.failed.map(f => f.title + '：' + f.error).join('\n') : ok ? '已批量验收 ' + ok + ' 项机械检查通过的任务，并已解锁后续依赖。' : '当前没有可批量验收的已通过任务。');
+  }
+  async function previewGitMerge(id) {
+    notice('正在临时 detached worktree 中预览合并…');
+    const r = await api('/teams/' + encodeURIComponent(id) + '/merge-preview', 'POST', {});
+    if (r.ok) {
+      const filesCount = (r.changedFiles || []).length;
+      notice(`合并预览通过：已重放 ${(r.appliedTasks || []).length} 项任务，涉及 ${filesCount} 个文件，未改动活工作树。${r.unacceptedTaskCount ? `（尚有 ${r.unacceptedTaskCount} 项未验收任务未纳入）` : ''}${r.diffStat ? '\n' + r.diffStat : ''}`);
+    } else {
+      const c = r.conflict;
+      notice(`合并预览发现冲突：任务 ${c?.title || c?.taskId || '未知'}（快照 ${c?.snapshotId?.slice(0, 12) || '未知'}）：${c?.detail || '补丁无法自动应用'}`);
+    }
+  }
+  async function applyGitMerge(id, branchName) {
+    notice('正在临时 detached worktree 中重放补丁并原子发布新分支…');
+    const r = await api('/teams/' + encodeURIComponent(id) + '/merge-apply', 'POST', branchName ? { branchName } : {});
+    notice(`已原子发布到新分支 ${r.branch}（提交 ${String(r.mergedCommit || '').slice(0, 12)}），共纳入 ${(r.appliedTasks || []).length} 项已验收任务；当前活工作树与既有分支未受改动。`);
   }
   async function archiveTeam(id, archived) {
     await api('/teams/' + encodeURIComponent(id) + '/archive', 'POST', { archived });
@@ -1117,6 +1170,10 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
     if (eventName === 'change') scheduleSseRefresh();
     else if (eventName === 'approval') { loadApprovals(); scheduleSseRefresh(); }
     else if (eventName === 'open-workbench') {
+      const targetSid = typeof payload?.sessionId === 'string' && payload.sessionId.trim() ? payload.sessionId.trim() : null;
+      const mySid = typeof activeSessionId === 'string' && activeSessionId.trim() ? activeSessionId.trim() : null;
+      const matched = targetSid ? (Boolean(mySid) && mySid === targetSid) : !mySid;
+      if (!matched) return;
       if (payload?.teamId && payload.teamId !== selectedTeam) changeTeam(payload.teamId);
       if (typeof options.onOpenWorkbench === 'function') options.onOpenWorkbench(payload);
     } else if (eventName === 'activity' && payload?.taskId && payload?.text) {
@@ -1151,7 +1208,9 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
     changePollTimer = setInterval(async () => {
       if (disposed || document.hidden) return;
       try {
-        const res = await api('/changes?since=' + lastChangeSeq);
+        const qs = new URLSearchParams({ since: String(lastChangeSeq) });
+        if (activeSessionId) qs.set('sessionId', activeSessionId);
+        const res = await api('/changes?' + qs.toString());
         if (typeof res.seq === 'number') {
           const prev = lastChangeSeq;
           lastChangeSeq = res.seq;
@@ -1173,7 +1232,10 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
     streamAbort = controller;
     try {
       const headers = token ? { 'x-engine-token': token } : {};
-      const res = await fetch(`${apiBase}/api/stream`, { headers, cache: 'no-store', credentials: 'same-origin', mode: 'same-origin', redirect: 'error', signal: controller.signal });
+      const streamUrl = activeSessionId
+        ? `${apiBase}/api/stream?sessionId=${encodeURIComponent(activeSessionId)}`
+        : `${apiBase}/api/stream`;
+      const res = await fetch(streamUrl, { headers, cache: 'no-store', credentials: 'same-origin', mode: 'same-origin', redirect: 'error', signal: controller.signal });
       if (!res.ok || !res.body) { streamConnected = false; throw new Error('SSE unavailable'); }
       streamConnected = true;
       const reader = res.body.getReader(), decoder = new TextDecoder();
@@ -1364,7 +1426,28 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
       await refreshDshSessionStatus();
     }));
   }
-  $('new-team').addEventListener('click', () => { $('team-dialog').showModal(); });
+  function syncWorkspaceModeField() {
+    const modeSelect = $('team-workspace-mode');
+    const repoField = $('team-repo-path-field');
+    const repoInput = $('team-repo-path');
+    if (!modeSelect || !repoField || !repoInput) return;
+    const isGit = modeSelect.value === 'git-worktree';
+    repoField.hidden = !isGit;
+    repoInput.required = isGit;
+  }
+  if ($('team-workspace-mode')) {
+    $('team-workspace-mode').addEventListener('change', () => {
+      syncWorkspaceModeField();
+      createRequest = null;
+      $('create-error').hidden = true;
+      if ($('team-workspace-mode').value === 'git-worktree' && $('team-repo-path') && !$('team-repo-path').value.trim()) {
+        api('/dsh/session' + (activeSessionId ? '?sessionId=' + encodeURIComponent(activeSessionId) : ''))
+          .then(snap => { if (snap?.cwd && $('team-repo-path') && !$('team-repo-path').value.trim()) $('team-repo-path').value = snap.cwd; })
+          .catch(() => {});
+      }
+    });
+  }
+  $('new-team').addEventListener('click', () => { syncWorkspaceModeField(); $('team-dialog').showModal(); });
   $('close-dialog').addEventListener('click', () => { $('team-dialog').close(); });
   $('add-member').addEventListener('click', () => addMember());
   $('team-form').addEventListener('input', () => { createRequest = null; $('create-error').hidden = true; });
@@ -1378,20 +1461,36 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
       diffEntries.push([item.name, diff]);
       return item;
     });
+    const workspaceMode = (data.get('workspaceMode') || 'isolated').trim();
+    const repoPath = (data.get('repoPath') || '').trim();
+    if (workspaceMode === 'git-worktree' && !repoPath) {
+      $('create-error').textContent = '选择 Git 仓库 Worktree 模式时必须填写本地 Git 仓库根目录绝对路径。';
+      $('create-error').hidden = false;
+      return;
+    }
     createRequest ??= crypto.randomUUID();
-    const payload = { requestId: createRequest, name: data.get('name').trim(), goal: data.get('goal').trim(), members };
+    const payload = {
+      requestId: createRequest,
+      name: data.get('name').trim(),
+      goal: data.get('goal').trim(),
+      members,
+      ...(activeSessionId ? { sessionId: activeSessionId } : {}),
+      ...(workspaceMode === 'git-worktree' ? { workspaceMode: 'git-worktree', repoPath } : {}),
+    };
     const controls = [...form.querySelectorAll('input,textarea,select,button')];
     locks.add('create'); controls.forEach(e => { e.disabled = true; });
     try {
       const r = await api('/teams', 'POST', payload), team = r.team || r;
       memberDifficulties.set(team.id, new Map(diffEntries));
-      changeTeam(team.id); $('team-dialog').close(); form.reset(); createRequest = null;
+      changeTeam(team.id); $('team-dialog').close(); form.reset(); syncWorkspaceModeField(); createRequest = null;
       $('member-fields').replaceChildren(); addMember(); addMember();
-      notice('团队已保存为筹备状态。确认职责后，点击“创建成员任务并开始”。');
+      notice(workspaceMode === 'git-worktree'
+        ? 'Git Worktree 团队已保存为筹备状态（已锁定基线提交，不会改动当前分支）。确认职责后点击“创建成员任务并开始”。'
+        : '团队已保存为筹备状态。确认职责后，点击“创建成员任务并开始”。');
     } catch (e) {
       $('create-error').textContent = e.message; $('create-error').hidden = false;
     } finally {
-      locks.delete('create'); controls.forEach(e => { e.disabled = false; }); updateMemberControls();
+      locks.delete('create'); controls.forEach(e => { e.disabled = false; }); updateMemberControls(); syncWorkspaceModeField();
     }
   });
   $('detail-tabs').addEventListener('click', event => { const tab = event.target.closest('[data-view]'); if (tab) { view = tab.dataset.view; showView(); } });
@@ -1448,12 +1547,18 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
   return {
     setSessionId(nextSessionId) {
       if (typeof nextSessionId === 'string' && nextSessionId.trim()) {
-        activeSessionId = nextSessionId.trim();
+        const clean = nextSessionId.trim();
+        const changed = clean !== activeSessionId;
+        activeSessionId = clean;
         api('/dsh/session', 'POST', { sessionId: activeSessionId }).catch(() => {});
+        if (changed && !disposed) restartStream();
       }
     },
     selectTeam(teamId) {
       if (teamId && teamId !== selectedTeam) changeTeam(teamId);
+    },
+    getSelectedTeam() {
+      return selectedTeam;
     },
     refresh: () => refresh(true),
     dispose() {

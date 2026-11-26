@@ -5,6 +5,36 @@ window.__ModuleLoader__.load({
     const WORKBENCH_ID = '@local/dsh-super-teams';
     const OPEN_EVENT = 'dsh-superagent:open-workbench';
     const FOCUS_TEAM_EVENT = 'dsh-superagent:focus-team';
+    // Strict per-session team focus map prevents session B from hijacking session A's mounted workbench.
+    const lastTeamBySession = new Map();
+    let lastUnscopedTeam = '';
+
+    function rememberTeamForSession(sessionId, teamId) {
+      if (!teamId) return;
+      if (sessionId) lastTeamBySession.set(sessionId, teamId);
+      else lastUnscopedTeam = teamId;
+    }
+
+    function readTeamForSession(sessionId) {
+      if (sessionId) return lastTeamBySession.get(sessionId) || '';
+      return lastUnscopedTeam || '';
+    }
+
+    function extractSessionId(raw) {
+      if (typeof raw === 'string' && raw.trim()) return raw.trim();
+      if (raw && typeof raw === 'object') {
+        if (typeof raw.sessionId === 'string' && raw.sessionId.trim()) return raw.sessionId.trim();
+        if (typeof raw.id === 'string' && raw.id.trim()) return raw.id.trim();
+      }
+      return null;
+    }
+
+    function matchesTargetSession(mySessionId, targetSessionId) {
+      const mySid = extractSessionId(mySessionId);
+      const targetSid = extractSessionId(targetSessionId);
+      if (targetSid) return Boolean(mySid) && mySid === targetSid;
+      return !mySid;
+    }
 
     function safeRequire(id) {
       try { return typeof require === 'function' ? require(id) : null; }
@@ -41,7 +71,9 @@ window.__ModuleLoader__.load({
       function WorkbenchHost(props) {
         const hostRef = useRef(null);
         const controllerRef = useRef(null);
-        const sessionId = props?.sessionId ?? props?.scope?.sessionId ?? null;
+        const sessionId = extractSessionId(props?.sessionId) ?? extractSessionId(props?.scope?.sessionId) ?? null;
+        const sessionIdRef = useRef(sessionId);
+        sessionIdRef.current = sessionId;
 
         useEffect(() => {
           const el = hostRef.current;
@@ -69,13 +101,19 @@ window.__ModuleLoader__.load({
               }
               const mod = await import(`${apiBase}/app.js`);
               if (cancelled) return;
+              const initSid = sessionIdRef.current;
               const ctrl = await mod.mountSuperAgentWorkbench(shadow, {
                 apiBase,
-                sessionId,
-                teamId: window.__DSH_SUPERAGENT_LAST_TEAM__ || '',
+                sessionId: initSid,
+                teamId: readTeamForSession(initSid),
               });
               if (cancelled) { ctrl.dispose(); return; }
               controllerRef.current = ctrl;
+              // Re-apply latest team remembered for this exact session in case focus arrived during async mount.
+              const latestSid = sessionIdRef.current;
+              if (latestSid && latestSid !== initSid) ctrl.setSessionId?.(latestSid);
+              const latestTeam = readTeamForSession(latestSid);
+              if (latestTeam) ctrl.selectTeam?.(latestTeam);
             } catch (err) {
               if (!cancelled && el.shadowRoot) {
                 const errBox = document.createElement('div');
@@ -90,10 +128,10 @@ window.__ModuleLoader__.load({
 
           const onFocusTeam = ev => {
             const teamId = ev?.detail?.teamId;
-            if (teamId) {
-              window.__DSH_SUPERAGENT_LAST_TEAM__ = teamId;
-              controllerRef.current?.selectTeam?.(teamId);
-            }
+            const targetSid = ev?.detail?.sessionId ?? null;
+            if (!teamId || !matchesTargetSession(sessionIdRef.current, targetSid)) return;
+            rememberTeamForSession(targetSid, teamId);
+            controllerRef.current?.selectTeam?.(teamId);
           };
           window.addEventListener(FOCUS_TEAM_EVENT, onFocusTeam);
 
@@ -106,7 +144,12 @@ window.__ModuleLoader__.load({
         }, []);
 
         useEffect(() => {
-          if (sessionId) controllerRef.current?.setSessionId?.(sessionId);
+          sessionIdRef.current = sessionId;
+          if (sessionId) {
+            controllerRef.current?.setSessionId?.(sessionId);
+            const remembered = readTeamForSession(sessionId);
+            if (remembered) controllerRef.current?.selectTeam?.(remembered);
+          }
         }, [sessionId]);
 
         return h('div', {
@@ -125,10 +168,11 @@ window.__ModuleLoader__.load({
         let openInRightSidebar = null;
 
         const triggerOpenWorkbench = (sessionId, teamId) => {
+          const cleanSid = typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : null;
           if (teamId) {
-            window.__DSH_SUPERAGENT_LAST_TEAM__ = teamId;
+            rememberTeamForSession(cleanSid, teamId);
             if (typeof window?.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
-              window.dispatchEvent(new CustomEvent(FOCUS_TEAM_EVENT, { detail: { sessionId, teamId } }));
+              window.dispatchEvent(new CustomEvent(FOCUS_TEAM_EVENT, { detail: { sessionId: cleanSid, teamId } }));
             }
           }
           const better = ctx.get?.('betterSidebar');
@@ -139,12 +183,12 @@ window.__ModuleLoader__.load({
                 type: WORKBENCH_KIND,
                 id: WORKBENCH_KIND,
                 title: '团队工作台',
-              }, sessionId ? { sessionId } : undefined);
+              }, cleanSid ? { sessionId: cleanSid } : undefined);
               return true;
             } catch {}
           }
           if (typeof openInRightSidebar === 'function') {
-            try { return openInRightSidebar(sessionId); } catch {}
+            try { return openInRightSidebar(cleanSid); } catch {}
           }
           return false;
         };
@@ -229,8 +273,10 @@ window.__ModuleLoader__.load({
           ), 'superagent-workbench: tab title');
 
           openInRightSidebar = sessionId => {
-            const target = sctx.sidebarRight.commandTarget?.(document.activeElement)
-              ?? (sessionId ? { sessionId, host: 'dock' } : undefined);
+            const activeTarget = sctx.sidebarRight.commandTarget?.(document.activeElement);
+            const target = sessionId
+              ? (activeTarget?.sessionId === sessionId ? activeTarget : { sessionId, host: 'dock' })
+              : activeTarget;
             if (!target) return false;
             sctx.sidebarRight.openTabFromTarget(WORKBENCH_KIND, target);
             if (!sctx.sidebarRight.isExpanded?.()) sctx.sidebarRight.toggleExpanded?.();

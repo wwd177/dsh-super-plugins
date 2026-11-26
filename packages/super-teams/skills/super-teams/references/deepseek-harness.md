@@ -1,11 +1,11 @@
-# DeepSeek Harness 原生接线（Super Teams 0.13.0-dsh.1 / Engine 0.16.0-dsh.1）
+# DeepSeek Harness 原生接线（Super Teams 0.14.1-dsh.1 / Engine 0.17.1-dsh.1）
 
-本包基于 DeepSeek Harness `0.2.x`（Windows / macOS / Linux） 原生 `ctx.tools.register`、`ctx.subagents` 与 `ctx.webServer` 接口运行，无需启动外部 MCP 子进程或后台守护程序。所有状态持久存储于 `~/.dsh/profiles/desktop/plugin-data/dsh-super-teams/engine.sqlite`（SQLite WAL 模式）及 `artifact-snapshots/` 快照目录，重启桌面端后状态完整保留。
+本包基于 DeepSeek Harness `0.2.x`（Windows / macOS / Linux）原生 `ctx.tools.register`、`ctx.subagents` 与 `ctx.webServer` 接口运行，无需启动外部 MCP 子进程或后台守护程序。所有持久化数据存放在 `~/.dsh/profiles/<profile>/plugin-data/dsh-super-teams/` 完整目录内（`engine.sqlite` WAL 数据库存元数据与索引，同目录的 `artifact-snapshots/`、`git-patches/`、`context/`、`attempts/` 分别存储冻结产物快照、Git 增量补丁、登记来源与运行工作区；完整备份必须复制整目录，切勿仅复制 `engine.sqlite`）。
 
 ## 默认工具矩阵（共 8 个原生工具，单一持久状态源）
 
-1. **`engine_workspace`**：绑定当前活跃根会话并在右侧栏自动展开「团队工作台」（同时兼容官方 `sidebarRightTabs` 与 `dsh-better-sidebar`）。
-2. **`engine_team`**：`prepare`（1–24 项 DAG 任务原子筹备，支持内联 `node_test.testScript`）、`create`、`list`、`overview`（支持 `attentionOnly`）、`graph`（CPM 关键路径波次与 `writeScopes` 重叠检测）、`accept_checked`（批量验收已通过检查的任务）、`pause`、`resume`、`cancel`、`archive`、`unarchive`。
+1. **`engine_workspace`**：绑定当前活跃根会话并在**当前会话**右侧栏展开「团队工作台」（同时兼容官方 `sidebarRightTabs` 与 `dsh-better-sidebar`，服务端/壳层/工作台三层按 `sessionId` 严格隔离，绝不跨聊天串切）。
+2. **`engine_team`**：`prepare`（1–24 项 DAG 任务原子筹备，支持 `workspaceMode: "isolated" | "git-worktree"` + `repoPath`、内联 `node_test.testScript` 与 `command_test`）、`create`、`list`、`overview`（支持 `attentionOnly`）、`graph`（CPM 关键路径波次与 `writeScopes` 重叠检测）、`accept_checked`（批量验收已通过检查的任务）、`merge_preview` / `merge_apply`（`git-worktree` 临时 detached worktree 预览冲突与原子 create-only 发布全新 `superagent/<slug>` 分支）、`pause`、`resume`、`cancel`、`archive`、`unarchive`。
 3. **`engine_submit`**：向已有团队追加单条任务（同样支持 `writeScopes`、内联 `testScript` 与行为门禁校验）。
 4. **`engine_overview`**：按 UTF-8 字节预算分页读取团队或任务决策摘要。
 5. **`engine_control`**：`inspect`、`pause`、`resume`、`cancel`、`retry`、`rework`（打回返工并自动附带失败检查明细）、`verify`、`accept`、`freeze`、`reconcile`（重启/中断后只读对账）、`abandon`。

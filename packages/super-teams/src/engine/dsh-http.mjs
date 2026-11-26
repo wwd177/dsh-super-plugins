@@ -70,7 +70,14 @@ export function createDshEngineRouter({
   let disk = {}, diskRefreshAt = 0, diskFlight = null;
   let changeSeq = 0;
   const changeLog = [];
-  const sseClients = new Set();
+  const sseClients = new Map();
+
+  const shouldDeliverEvent = (event, payload, clientSessionId) => {
+    if (event !== 'open-workbench') return true;
+    const targetSid = payload?.sessionId ?? null;
+    if (clientSessionId) return Boolean(targetSid) && targetSid === clientSessionId;
+    return true;
+  };
 
   const recordAndBroadcast = (event, payload) => {
     const entry = { seq: ++changeSeq, event, payload, at: new Date().toISOString() };
@@ -78,12 +85,13 @@ export function createDshEngineRouter({
     if (changeLog.length > MAX_CHANGE_LOG) changeLog.splice(0, changeLog.length - MAX_CHANGE_LOG);
     if (!sseClients.size) return entry;
     const frame = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
-    for (const client of [...sseClients]) {
+    for (const [client, meta] of [...sseClients.entries()]) {
       if (client.destroyed || client.writableEnded || client.writableLength > MAX_SSE_BUFFER_BYTES) {
         sseClients.delete(client);
         try { client.destroy(); } catch {}
         continue;
       }
+      if (!shouldDeliverEvent(event, payload, meta?.sessionId ?? null)) continue;
       try { client.write(frame); } catch { sseClients.delete(client); }
     }
     return entry;
@@ -101,7 +109,7 @@ export function createDshEngineRouter({
   };
 
   const heartbeat = setInterval(() => {
-    for (const client of [...sseClients]) {
+    for (const client of [...sseClients.keys()]) {
       if (client.destroyed || client.writableEnded || client.writableLength > MAX_SSE_BUFFER_BYTES) {
         sseClients.delete(client);
         try { client.destroy(); } catch {}
@@ -215,16 +223,20 @@ export function createDshEngineRouter({
         if (!Number.isSafeInteger(rawSince) || rawSince < -1 || rawSince > 2e9) {
           throw new Error('分页参数无效');
         }
-        const items = rawSince < 0 ? [] : changeLog.filter(item => item.seq > rawSince);
+        const clientSessionId = typeof query.sessionId === 'string' && query.sessionId.trim() ? query.sessionId.trim() : null;
+        const items = rawSince < 0
+          ? []
+          : changeLog.filter(item => item.seq > rawSince && shouldDeliverEvent(item.event, item.payload, clientSessionId));
         return send(200, { seq: changeSeq, items });
       }
 
       if (req.method === 'GET' && pathname === '/api/stream') {
         if (sseClients.size >= MAX_SSE_CLIENTS) {
-          const oldest = sseClients.values().next().value;
+          const oldest = sseClients.keys().next().value;
           sseClients.delete(oldest);
           try { oldest.end(); } catch {}
         }
+        const clientSessionId = typeof query.sessionId === 'string' && query.sessionId.trim() ? query.sessionId.trim() : null;
         res.writeHead(200, {
           'Content-Type': 'text/event-stream; charset=utf-8',
           'Cache-Control': 'no-cache, no-store',
@@ -232,7 +244,7 @@ export function createDshEngineRouter({
           'X-Accel-Buffering': 'no',
         });
         res.write(`event: ready\ndata: ${JSON.stringify({ version: ENGINE_VERSION, pid: process.pid, seq: changeSeq })}\n\n`);
-        sseClients.add(res);
+        sseClients.set(res, { sessionId: clientSessionId });
         req.on('close', () => { sseClients.delete(res); });
         return;
       }
@@ -444,7 +456,7 @@ export function createDshEngineRouter({
     engine.off?.('change', onEngineChange);
     engine.off?.('activity', onEngineActivity);
     approvals?.off?.('change', onApprovalChange);
-    for (const client of [...sseClients]) {
+    for (const client of [...sseClients.keys()]) {
       try { client.end(); } catch {}
     }
     sseClients.clear();

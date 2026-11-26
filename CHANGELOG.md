@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.17.1-dsh.1 (SuperAgent `1.22.1-dsh.1` / Super Teams `0.14.1-dsh.1` / Installer Skill `1.1.1`)
+
+- **Strict Multi-Chat Workbench Session Isolation (Fixes Dual-Panel Cross-Talk)**:
+  - Fixed all four cross-chat leakage points when chat A already has a mounted right-sidebar workbench and chat B requests opening its own team:
+    1. `dsh-http.mjs` now tracks per-client `sessionId` on `/api/stream?sessionId=` and filters both SSE push and `/api/changes?since=&sessionId=` so `open-workbench` events for chat B are never delivered to chat A's subscribed workbench.
+    2. `client.js` replaced the single global `window.__DSH_SUPERAGENT_LAST_TEAM__` slot with a per-session map (`lastTeamBySession`) and enforces exact `sessionId` matching inside `WorkbenchHost`'s `FOCUS_TEAM_EVENT` listener.
+    3. `client.js` `openInRightSidebar(sessionId)` now prioritizes the explicit `sessionId` over `commandTarget(document.activeElement)` so opening chat B's tab never hijacks chat A's focused dock.
+    4. `public/app.js` enforces strict `sessionId` matching inside `handleLiveEvent('open-workbench')`, passes `sessionId` on SSE/changes requests and manual `POST /api/teams`, and reconnects streams when `setSessionId` updates.
+- **Right-Sidebar Git Worktree Team Creation & Merge Controls**:
+  - Added `workspaceMode` (`isolated` | `git-worktree`) and conditional `repoPath` input (auto-prefilled from the active session's `cwd` when available) directly to the standard **New Team** modal in both DSH (`template.html`/`index.html`/`app.js`) and Codex (`index.html`/`app.js`).
+  - Team overview now displays a `Git Worktree` badge, pinned `baseCommit`/`baseBranch`/`lastMerge` metadata, and interactive **Preview Git Merge** (`merge_preview`) & **Atomic Publish to New Branch** (`merge_apply`) controls.
+- **Complete Companion Skill Sync & Explicit Full-Directory Backup Guidance**:
+  - Synchronized all 4 DSH companion skills (`superagent-workflow` + all references, `workflow-quality`, `development-handoff`, `super-teams`) and READMEs with `v0.17.x` capabilities (`git-worktree`, `command_test`, `merge_preview`/`merge_apply`, `HANDOFF.md` + `changes.patch`).
+  - Corrected misleading SQLite-only persistence wording across skills and docs to make clear that **copying only `engine.sqlite` does NOT preserve frozen deliverables or Git patches** — complete backups must copy the full `plugin-data/dsh-super-teams/` directory (`engine.sqlite` + `-wal`/`-shm`, `artifact-snapshots/`, `git-patches/`, `context/`, `attempts/`).
+
 ## v0.17.0-dsh.1 (SuperAgent `1.22.0-dsh.1` / Super Teams `0.14.0-dsh.1`)
 
 - **Hardened `git-worktree` Collaboration Mode (`workspaceMode: "git-worktree"`)**:

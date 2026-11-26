@@ -1,13 +1,13 @@
 # DeepSeek Harness 原生子代理与会话接线
 
-本文说明 SuperAgent（`1.21.0-dsh.1`）与 Super Teams（`0.13.0-dsh.1` / Engine `0.16.0-dsh.1`）在 DeepSeek Harness（`0.2.x` 通用版）中的宿主原生能力边界、模型路由规则与会话关联方式。
+本文说明 SuperAgent（`1.22.1-dsh.1`）与 Super Teams（`0.14.1-dsh.1` / Engine `0.17.1-dsh.1`）在 DeepSeek Harness（`0.2.x` 通用版）中的宿主原生能力边界、模型路由规则与会话隔离机制。
 
 ## 1. 两种分工粒度（职责正交，单一持久状态源）
 
 1. **SQLite WAL 持久引擎编排（`engine_*` + 只读 `teams_engine`，所有多成员/多波次任务唯一持久入口）**：
-   - 状态实时写入 `~/.dsh/profiles/desktop/plugin-data/dsh-super-teams/engine.sqlite`（跨重启完整保留），不再维护第二套项目手工记板。
-   - 引擎通过宿主 `ctx.subagents.startActivation({ provider: "spawn", delivery: "caller", ... })` 在当前活跃根会话下创建隔离上下文子代理；重叠 `writeScopes` 由调度器互斥锁（`write-scope-lock`）串行保护，越界产物由盘后校验（`write_scope_guard`）拦截。
-   - 每个任务尝试拥有独立工作目录（`workspaces/<taskId>/<attemptId>`），上游已验收依赖的冻结快照与团队 `ruling`/来源自动物化到该目录并校验 SHA-256；`autoAccept: true` 强制要求通过至少一条 `node_test` 行为测试。
+   - 元数据写入 `~/.dsh/profiles/<profile>/plugin-data/dsh-super-teams/engine.sqlite`（WAL），冻结产物快照、Git 增量补丁、登记来源与运行工作区分别存放在同目录 `artifact-snapshots/`、`git-patches/`、`context/`、`attempts/`（完整备份必须复制整目录，不可只复制 `engine.sqlite`）。
+   - 引擎通过宿主 `ctx.subagents.startActivation({ provider: "spawn", delivery: "caller", ... })` 在当前活跃根会话下创建隔离上下文子代理；支持 `isolated` 隔离目录与 `git-worktree` 独立 detached worktree 双模式；重叠 `writeScopes` 由调度器互斥锁（`write-scope-lock`）串行保护，越界改动由测前/测后扫描或双树 diff（`write_scope_guard`）拦截。
+   - 上游已验收依赖按固定版本物化（隔离模式校验 SHA-256 快照，`git-worktree` 模式按传递闭环拓扑重放 `changes.patch`）；`autoAccept: true` 严格绑定不可变 `node_test`，多语言 `command_test` 门禁停在 `checked` 供显式 `accept` 复核。
 2. **宿主原生工具临时直调（`subagent` / `subagent_fork`，仅限当轮无需持久状态的小型并行勘查或评审）**：
    - `subagent`：默认独立上下文（不复制母会话冗长历史），必须显式传入当前目标、最新授权/纠正、负责文件与验收标准。
    - `subagent_fork`：继承母会话已有上下文，仅在短消息和文件引用确实不足以传达背景时使用。
