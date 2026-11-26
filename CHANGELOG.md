@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.19.0-dsh.1 (SuperAgent `1.24.0-dsh.1` / Super Teams `0.16.0-dsh.1` / Shared Core `0.19.0` / Installer Skill `1.3.0`)
+
+Hardens execution security isolation, transactional budget/breaker control, lease-checked remote Git/PR delivery, per-worktree environment recipes, and full UI E2E verification across both hosts on the byte-identical shared `engine-core 0.19.0`:
+
+- **Verification Child Isolation, Process-Tree Termination & Truthful Host Posture (`core/src/process-isolation.mjs`)**:
+  - `buildIsolatedTestEnv` strips secret/credential env vars and redirects `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `GH_CONFIG_DIR`, `GIT_CONFIG_GLOBAL`, and `NPM_CONFIG_USERCONFIG` into ephemeral per-run roots; verified by canary leak checks across live child processes.
+  - `killProcessTree` terminates entire parent+descendant trees across Windows (`taskkill /T /F`) and POSIX process groups (`-pid`).
+  - `probeHostIsolationPosture` truthfully reports `env_and_config_isolated_same_os_user` vs `os_account_isolated` alongside live host toolchain checks.
+- **Transactional Budget Guard & Breaker Control (`core/src/budget-guard.mjs`)**:
+  - Atomic SQLite CAS reservation for hard attempt limits (`maxTeamAttempts`) and concurrency (`maxInFlight`), preventing dual-worker overspend races.
+  - Monotonic idempotent per-`(attemptId, threadId)` token snapshot tracking (`maxTeamTokensSoft` soft pause with `inFlightExposureAtBreach`), hard `maxTaskDurationMs` watchdog kills, and `sameErrorBreakerThreshold` pause preservation (`_writeChange` preserves `blockReason: 'same_error_breaker'`).
+- **Authorized Remote Delivery & Recovery (`core/src/remote-delivery.mjs`)**:
+  - Strict `allowedRemoteRepos` allowlist checks, failed verification candidates (`status === 'verification_failed'`) blocked from approval (`CANDIDATE_VERIFICATION_FAILED`), and transactional mutual exclusion between `revokeApproval` and publish.
+  - Remote branch push enforces `--force-with-lease=<ref>:<expectedOldOid>` (rejecting ancestor rewinds and freezing streams to `frozen_external_drift`) plus `resolveExternalDrift`, lost-receipt idempotent draft PR recovery (`reconcileRemoteIntents` / `resolveUnknownPrIntent`), and single active revision reuse per `(deliveryStreamId, candidateId)` across distinct remote failure signatures.
+- **Repo Environment Recipes, Concurrent Worktree Services & Blind Benchmark (`core/src/env-recipe.mjs`, `core/src/bench-harness.mjs`)**:
+  - Read-only `probeRepoEnvironment` (`autoSelected: false`), explicitly approved `recipeHash` persistence, isolated dynamic-port `WorktreeEnvManager` service lifecycle, and 6-task × 3-arm screening benchmark harness with exact one-sided binomial sign test.
+- **Workbench UI & Headless Chromium E2E Coverage**:
+  - Upgraded both Codex and DSH workbenches with candidate selector auto-clearing `selectedApprovalId` on switch, decoupled approve/revoke/publish/revise actions, criteria freeze + human signoff UI, read-only 3-state PR reconciliation pills, live budget progress card, repo probe dialog, security posture & refusal audit views, verified in headless Chromium/Edge CDP E2E at `390px`/`400px`/`1320px`.
+
 ## v0.18.0-dsh.1 (SuperAgent `1.23.0-dsh.1` / Super Teams `0.15.0-dsh.1` / Shared Core `0.18.0` / Installer Skill `1.2.0`)
 
 Implements all 8 v0.18 architecture rulings (`R1`–`R8`) across both DeepSeek Harness and Codex on a single SHA-256 locked shared `engine-core`:

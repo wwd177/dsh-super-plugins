@@ -12,9 +12,9 @@ Runs directly inside the DeepSeek Harness Cordis host process — **zero externa
 
 | Component | Package & Version | Role |
 | --- | --- | --- |
-| **SuperAgent Workflow & Protocol** | `@local/dsh-superagent-menu` (`1.23.0-dsh.1`) | Unified **SuperAgent** execution protocol: goal criteria freezing (R2), evidence-based routing, polyglot verification gates, and Git worktree delivery methodology; includes 3 skills plus `+` menu actions |
-| **Super Teams Review Workbench & Shared Core** | `@local/dsh-super-teams` (`0.15.0-dsh.1`) | Powered by SHA-256 locked shared `engine-core 0.18.0` (`Engine 0.18.0-dsh.1`): single scheduler owner, immutable delivery candidates & bound approvals, incremental integration revisions, base-drift three-way merge checks, read-only GitHub PR reconciliation, and session-isolated right-sidebar workbench |
-| **AI Agent Installer Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.2.0`) | Dedicated skill for any AI coding agent to safely install, verify, or uninstall the suite via one entrypoint |
+| **SuperAgent Workflow & Protocol** | `@local/dsh-superagent-menu` (`1.24.0-dsh.1`) | Unified **SuperAgent** execution protocol: goal criteria freezing (R2), evidence-based routing, polyglot verification gates, and Git worktree delivery methodology; includes 3 skills plus `+` menu actions |
+| **Super Teams Review Workbench & Shared Core** | `@local/dsh-super-teams` (`0.16.0-dsh.1`) | Powered by SHA-256 locked shared `engine-core 0.19.0` (`Engine 0.19.0-dsh.1`): isolated test environments & descendant tree kill, transactional budget & breaker guards, immutable candidates with switch-safe approvals, lease-checked remote delivery, env recipes, and read-only PR reconciliation |
+| **AI Agent Installer Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.3.0`) | Dedicated skill for any AI coding agent to safely install, verify, or uninstall the suite via one entrypoint |
 
 ---
 
@@ -66,8 +66,8 @@ node ./scripts/install.mjs --verify
 # Clean uninstall (preserves the entire plugin-data/dsh-super-teams/ directory unless --purge-data is passed)
 node ./scripts/install.mjs --uninstall
 
-# Run unit, persistence, behavioral gate, git-worktree & polyglot regression suites
-node --test ./tests/dsh-runtime.test.mjs ./tests/board.test.mjs ./tests/v0170-worktree-polyglot.test.mjs
+# Run unit, persistence, behavioral gate, security isolation, budget guard, remote delivery & parity suites
+npm test
 ```
 
 > **Important Backup Note (Do NOT Copy Only `engine.sqlite`)**: `engine.sqlite` stores metadata, event logs, and hash indexes only — it does **not** embed frozen deliverable files or Git patches. To preserve deliverables and patches safely, close DeepSeek Harness first and back up the **entire `~/.dsh/profiles/<profile>/plugin-data/dsh-super-teams/` directory** (`engine.sqlite`, `-wal`/`-shm`, `artifact-snapshots/`, `git-patches/`, `context/`, and `attempts/`).

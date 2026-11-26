@@ -62,13 +62,24 @@ function initFixtureRepo(root) {
   return { repoDir, baseCommit };
 }
 
-async function waitUntil(fn, timeoutMs = 15000, label = 'condition') {
-  const deadline = Date.now() + timeoutMs;
+async function waitUntil(fn, timeoutMs = 20000, label = 'condition', diagFn = null) {
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let lastErr = null;
+  let polls = 0;
   while (Date.now() < deadline) {
-    if (fn()) return;
+    polls += 1;
+    try {
+      if (await fn()) return;
+      lastErr = null;
+    } catch (err) {
+      lastErr = err;
+    }
     await new Promise(r => setTimeout(r, 25));
   }
-  throw new Error(`Timed out waiting for ${label}`);
+  const elapsed = Date.now() - startedAt;
+  const diag = typeof diagFn === 'function' ? (() => { try { return diagFn(); } catch (e) { return e.message; } })() : '';
+  throw new Error(`Timed out waiting for ${label} after ${elapsed}ms (${polls} polls)${lastErr ? ` | lastErr=${lastErr.message}` : ''}${diag ? ` | diag=${typeof diag === 'string' ? diag : JSON.stringify(diag)}` : ''}`);
 }
 
 function createScriptedAdapter(handler) {

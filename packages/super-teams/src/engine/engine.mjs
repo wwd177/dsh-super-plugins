@@ -18,6 +18,8 @@ import {
 } from './git-worktree.mjs';
 import { CORE_VERSION } from './core/src/core-version.mjs';
 import { DeliveryService } from './core/src/delivery-service.mjs';
+import { BudgetGuard, normalizeBudgetConfig } from './core/src/budget-guard.mjs';
+import { killProcessTree } from './core/src/process-isolation.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const now = () => new Date().toISOString();
@@ -182,7 +184,7 @@ function teamPlan(tasks, members, globalContextStore = null) {
 }
 
 export class Engine extends EventEmitter {
-  constructor({ dataDir, adapter, contextStore, maxConcurrent = 2, packetBudgetBytes = 16384, resultBudgetBytes = 4096, retryBaseDelayMs = 1500 }) {
+  constructor({ dataDir, adapter, contextStore, maxConcurrent = 2, packetBudgetBytes = 16384, resultBudgetBytes = 4096, retryBaseDelayMs = 1500, allowedRemoteRepos = null }) {
     super();
     if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1) throw new Error('maxConcurrent must be a positive integer');
     this.dataDir = path.resolve(dataDir); this.adapter = adapter; this.contextStore = contextStore;
@@ -194,11 +196,13 @@ export class Engine extends EventEmitter {
     this.verifying = new Map();
     this.finishing = new Map();
     this.liveActivity = new Map();
+    this.budgetGuard = null;
     this.delivery = new DeliveryService({
       engine: this,
       runStandaloneCheck,
       validateCheck,
       isBehavioralCheck,
+      allowedRepos: allowedRemoteRepos,
     });
   }
   setMaxConcurrent(value) {
@@ -234,6 +238,7 @@ export class Engine extends EventEmitter {
     fs.mkdirSync(this.dataDir, { recursive: true });
     this.dataDir = fs.realpathSync(this.dataDir);
     this.store = new Store(this.dataDir);
+    this.budgetGuard = new BudgetGuard({ store: this.store });
     try {
       for (const task of this.store.tasks()) {
         if (task.threadId && task.executionKind !== 'native') this.adapter.authorizeThread?.(task.threadId);
@@ -269,12 +274,19 @@ export class Engine extends EventEmitter {
     team.revision++; team.updatedAt = now(); this.store.saveTeam(team);
     this.emit('change', { teamId: team.id, revision: team.revision, type, control: team.control });
   }
-  createTeam({ requestId, name, goal, members, tasks, sessionId, workspaceMode = 'isolated', repoPath }) {
+  createTeam({ requestId, name, goal, members, tasks, sessionId, workspaceMode = 'isolated', repoPath, budget, allowedRemoteRepos }) {
     this._ready();
     if ([requestId, name, goal].some(value => typeof value !== 'string' || !value.trim())) throw new Error('Team requestId, name and goal are required');
     if (name.length > 200 || goal.length > 16000) throw new Error('Team name or goal exceeds the supported length');
     if (sessionId !== undefined && sessionId !== null && (typeof sessionId !== 'string' || !sessionId.trim() || sessionId.length > 180)) throw new Error('Invalid sessionId');
     if (!['isolated', 'git-worktree'].includes(workspaceMode)) throw new Error('workspaceMode must be "isolated" or "git-worktree"');
+    let normalizedBudget = null;
+    if (budget !== undefined && budget !== null) normalizedBudget = normalizeBudgetConfig(budget);
+    let cleanAllowedRepos = null;
+    if (allowedRemoteRepos !== undefined && allowedRemoteRepos !== null) {
+      if (!Array.isArray(allowedRemoteRepos)) throw new Error('allowedRemoteRepos must be an array');
+      cleanAllowedRepos = allowedRemoteRepos.map(r => String(r).trim()).filter(Boolean);
+    }
     let gitRepo = null;
     if (workspaceMode === 'git-worktree') {
       gitRepo = validateGitRepoSync(repoPath, this.dataDir);
@@ -301,6 +313,7 @@ export class Engine extends EventEmitter {
       requestId,
       ...clone(input),
       ...(gitRepo ? { workspaceMode: 'git-worktree', repoPath: gitRepo.repoPath, baseCommit: gitRepo.baseCommit, baseBranch: gitRepo.baseBranch } : { workspaceMode: 'isolated' }),
+      ...(cleanAllowedRepos ? { allowedRemoteRepos: cleanAllowedRepos } : {}),
       ...(cleanSessionId ? { sessionId: cleanSessionId } : {}),
       members: input.members.map(member => ({ id: randomUUID(), ...member })),
       control: 'pause',
@@ -367,6 +380,7 @@ export class Engine extends EventEmitter {
     }
     this.emit('change', { teamId: team.id, revision: team.revision, type: 'team-created', control: team.control });
     for (const change of changes) this.emit('change', change);
+    if (normalizedBudget) this.budgetGuard.configureTeamBudget(team.id, normalizedBudget);
     return this.getTeam(team.id);
   }
   getTeam(id) {
@@ -391,8 +405,14 @@ export class Engine extends EventEmitter {
       graph,
       goalCriteria: this.store.latestGoalCriteria(id),
       candidates: this.store.teamCandidates(id),
+      approvals: this.store.teamApprovals(id),
       publishIntents: this.store.teamPublishIntents(id),
       prLinks: this.store.teamPrLinks(id),
+      remotePushIntents: this.store.teamRemotePushIntents(id),
+      prCreateIntents: this.store.teamPrCreateIntents(id),
+      deliveryStreams: this.store.teamDeliveryStreams(id),
+      envRecipes: this.store.teamEnvRecipes(id),
+      budget: this.budgetGuard ? this.budgetGuard.getLedger(id) : null,
     };
   }
   getTeamGraph(id) {
@@ -442,7 +462,7 @@ export class Engine extends EventEmitter {
   }
   async _syncTeamIntents() { for (const team of this.store.teams()) await this._applyTeamIntent(team.id, true); }
   _writeChange(task, type, detail) {
-    if (task.state !== 'blocked') task.blockReason = null;
+    if (task.state !== 'blocked' && !(task.state === 'paused' && task.blockReason === 'same_error_breaker')) task.blockReason = null;
     task.updatedAt = now(); task.revision++;
     this.store.save(task);
     const event = this.store.event(task.id, { type, at: task.updatedAt, state: task.state, blockReason: task.blockReason ?? null, error: task.error ?? null, attemptId: task.attemptId, ...detail });
@@ -725,8 +745,15 @@ export class Engine extends EventEmitter {
         if (dependencyContext.snapshots.length) engineMaterializedDirs.push('dependencies');
         this._assertDependencyBindings(task, dependencyContext.versions);
         const packet = contextManifest ? context.buildPacket({ goal, requiredSections, sourceIds, budgetBytes: this.packetBudgetBytes, manifest: contextManifest }) : plannedPacket;
+        let budgetReservation = null;
+        if (task.teamId && this.budgetGuard) {
+          budgetReservation = this.budgetGuard.reserveAttempt(task.teamId, attemptId);
+        }
         task = this.store.get(task.id);
-        if (this.closed || task.revision !== preparationRevision || !this._mayRun(task) || !['queued', 'blocked'].includes(task.state)) continue;
+        if (this.closed || task.revision !== preparationRevision || !this._mayRun(task) || !['queued', 'blocked'].includes(task.state)) {
+          if (budgetReservation?.enforced) this.budgetGuard.releaseAttempt(task.teamId, attemptId);
+          continue;
+        }
         Object.assign(task, { state: 'dispatching', attemptId, cwd, ...(isWorktree ? { workspaceMode: 'git-worktree', attemptStartCommit, appliedGitDependencies, engineMaterializedDirs } : {}), ...(effectiveSessionId ? { sessionId: effectiveSessionId } : {}), threadId: null, turnId: null, ...selection, dependencyVersions: dependencyContext.versions, dependencyManifest, contextManifest, packetBytes: packet.bytes, packetRequiredBytes: packet.requiredBytes, budgetBreakdown: packet.budgetBreakdown, budgetDetails: null, error: null, runtimeError: null, executionUnresolved: true, verification: null, summary: null, resultFile: null, resultSha256: null, completionStatus: null, recovery: null, nextRetryAt: null, startedAt: now(), finishedAt: null, durationMs: null });
         if (native) Object.assign(task, { executionKind: 'native', nativeBindingId: native.binding.id, nativeBindingRevision: native.binding.revision,
           nativeThreadId: native.binding.threadId, nativeHostId: native.binding.hostId ?? 'local', nativeOriginThreadId: native.binding.originThreadId,
@@ -735,20 +762,27 @@ export class Engine extends EventEmitter {
         // Preserve the workspace once persistence is attempted: a failed return
         // cannot prove that no dispatch intent was committed.
         preserveWorkspace = true;
-        this._save(task, 'dispatch-intent', { packetBytes: packet.bytes, sourceIds });
+        try {
+          this._save(task, 'dispatch-intent', { packetBytes: packet.bytes, sourceIds });
+        } catch (saveErr) {
+          if (budgetReservation?.enforced) this.budgetGuard.releaseAttempt(task.teamId, attemptId);
+          throw saveErr;
+        }
         if (candScopes) activeScopeHolders.push(task);
         // This call immediately invokes adapter.start; no awaited gap after permission.
-        this._dispatch(task, packet.text);
+        this._dispatch(task, packet.text, budgetReservation);
       } catch (error) {
         if (this.closed || this.store.get(task.id)?.revision !== preparationRevision) continue;
         task = this.store.get(task.id);
-        if (task.state !== 'blocked' || task.error !== error.message || task.blockReason !== 'preflight') {
-          task.state = 'blocked'; task.blockReason = 'preflight'; task.error = error.message;
+        const isBudgetBlock = String(error.code || '').startsWith('BUDGET_');
+        const nextBlockReason = isBudgetBlock ? 'budget' : 'preflight';
+        if (task.state !== 'blocked' || task.error !== error.message || task.blockReason !== nextBlockReason) {
+          task.state = 'blocked'; task.blockReason = nextBlockReason; task.error = error.message;
           task.budgetDetails = error.code === 'CONTEXT_BUDGET_EXCEEDED' ? Object.fromEntries(['code', 'budgetBytes', 'requiredBytes', 'overByBytes', 'budgetBreakdown'].map(key => [key, error[key]])) : null;
           if (error.code === 'WORKTREE_DEPENDENCY_CONFLICT') {
             task.conflictDependencyVersions = task.dependsOn.map(id => ({ id, snapshotId: this.store.get(id)?.acceptance?.snapshotId ?? null }));
           }
-          this._save(task, 'preflight-blocked');
+          this._save(task, isBudgetBlock ? 'budget-blocked' : 'preflight-blocked');
         }
       } finally {
         if (preparedWorkspace && !preserveWorkspace && fs.existsSync(preparedWorkspace.cwd)) {
@@ -923,6 +957,27 @@ export class Engine extends EventEmitter {
   reconcilePublishIntents(teamId) { return this.delivery.reconcilePublishIntents(teamId); }
   checkCandidateBaseDrift(teamId, opts) { return this.delivery.checkCandidateBaseDrift(teamId, opts); }
   reconcileGitHubPr(teamId, opts) { return this.delivery.reconcileGitHubPr(teamId, opts); }
+  setTeamBudget(teamId, budget) { this._team(teamId); return this.budgetGuard.configureTeamBudget(teamId, budget); }
+  getTeamBudget(teamId) { this._team(teamId); return this.budgetGuard.getLedger(teamId); }
+  recordRefusal(surface, action, reason, payload = {}) {
+    if (!this.store || this.closed) return null;
+    try {
+      const rec = { id: randomUUID(), surface: String(surface || 'unknown'), action: String(action || ''), reason: String(reason || ''), payload, at: now() };
+      this.store.addRefusal(rec);
+      return rec;
+    } catch { return null; }
+  }
+  listRefusals(limit = 50) { this._ready(); return this.store.listRefusals(limit); }
+  pushCandidateRemote(teamId, opts) { return this.delivery.pushCandidateRemote(teamId, opts); }
+  createPullRequestIdempotent(teamId, opts) { return this.delivery.createPullRequestIdempotent(teamId, opts); }
+  reconcileRemoteIntents(teamId, opts) { return this.delivery.reconcileRemoteIntents(teamId, opts); }
+  resolveUnknownPrIntent(teamId, opts) { return this.delivery.resolveUnknownPrIntent(teamId, opts); }
+  ingestRemoteFailureEvent(teamId, opts) { return this.delivery.ingestRemoteFailureEvent(teamId, opts); }
+  resolveExternalDrift(teamId, opts) { return this.delivery.resolveExternalDrift(teamId, opts); }
+  probeRepoEnvironment(repoPath) { return this.delivery.probeRepoEnvironment(repoPath); }
+  approveEnvRecipe(teamId, opts) { return this.delivery.approveEnvRecipe(teamId, opts); }
+  listEnvRecipes(teamId) { return this.delivery.listEnvRecipes(teamId); }
+  getIsolationPosture() { return this.delivery.getIsolationPosture(); }
   async _dependencyContext(task) {
     const versions = [], sourceIds = [], manifests = [], snapshots = [];
     for (const id of task.dependsOn) {
@@ -991,17 +1046,23 @@ export class Engine extends EventEmitter {
     const task = this.store.get(id);
     return task?.attemptId === attemptId && task.executionUnresolved && (executing.has(task.state) || task.state === 'abandoned' || ['unknown', 'paused-unconfirmed', 'cancelled-unconfirmed'].includes(task.state)) ? task : null;
   }
-  async _dispatch(task, prompt) {
+  async _dispatch(task, prompt, budgetReservation = null) {
     const { id, attemptId } = task;
+    let durationTimer = null;
+    let durationTimedOut = false;
     try {
       const permission = this._current(id, attemptId);
-      if (!permission) return;
+      if (!permission) {
+        if (budgetReservation?.enforced && task.teamId && this.budgetGuard) this.budgetGuard.releaseAttempt(task.teamId, attemptId);
+        return;
+      }
       if (!this._mayRun(permission)) {
         this._inheritTeamControl(permission);
         permission.executionUnresolved = false;
         permission.attemptId = null; permission.cwd = null;
         permission.state = permission.control === 'pause' ? 'paused' : 'cancelled';
         this._save(permission, 'dispatch-permission-withdrawn');
+        if (budgetReservation?.enforced && task.teamId && this.budgetGuard) this.budgetGuard.releaseAttempt(task.teamId, attemptId);
         return;
       }
       const executionAdapter = task.executionKind === 'native' ? this.nativeAdapter : this.adapter;
@@ -1053,6 +1114,18 @@ export class Engine extends EventEmitter {
             }
           }
           const parsed = summarizeHostEvent(raw);
+          if (raw?.method === 'thread/tokenUsage/updated' && current.teamId && this.budgetGuard) {
+            const u = raw.params?.tokenUsage ?? raw.params?.usage ?? raw.params;
+            const usageUpdate = this.budgetGuard.recordUsageSnapshot(current.teamId, attemptId, current.threadId, u);
+            if (usageUpdate?.justBreached) {
+              const t = this.store.team(current.teamId);
+              if (t && t.control !== 'cancel') {
+                t.control = 'pause';
+                this._saveTeam(t, 'budget-soft-limit-paused');
+                this._applyTeamIntent(t.id, false).catch(() => {});
+              }
+            }
+          }
           if (parsed?.text) {
             this.liveActivity.set(id, { text: parsed.text, at: now() });
             this.emit('activity', { taskId: id, teamId: current.teamId ?? null, text: parsed.text, at: now() });
@@ -1070,7 +1143,29 @@ export class Engine extends EventEmitter {
       if (current.control === 'run' && current.state !== 'abandoned') current.state = 'running';
       this._save(current, 'host-started');
       if (current.control !== 'run' && current.state !== 'abandoned') this._interrupt(current);
-      const result = await handle.completion;
+      let result;
+      const durationMsLimit = budgetReservation?.maxTaskDurationMs ?? null;
+      if (durationMsLimit) {
+        let resolveTimeout;
+        const timeoutPromise = new Promise(r => { resolveTimeout = r; });
+        durationTimer = setTimeout(async () => {
+          durationTimedOut = true;
+          try { await handle.interrupt?.(); } catch {}
+          if (Array.isArray(handle.pids)) {
+            for (const pid of handle.pids) killProcessTree(pid);
+          } else if (handle.pid) {
+            killProcessTree(handle.pid);
+          }
+          const grace = setTimeout(() => {
+            resolveTimeout({ status: 'failed', text: '', error: `budget_exceeded:duration (${durationMsLimit}ms)` });
+          }, 300);
+          grace.unref?.();
+        }, durationMsLimit);
+        durationTimer.unref?.();
+        result = await Promise.race([handle.completion, timeoutPromise]);
+      } else {
+        result = await handle.completion;
+      }
       current = this._current(id, attemptId); if (!current) return;
       await this._finish(current, result);
     } catch (error) {
@@ -1084,7 +1179,14 @@ export class Engine extends EventEmitter {
       current.runtimeError = current.error;
       this._save(current, error.executionNotStarted ? 'execution-not-started' : 'execution-unknown');
     } finally {
+      clearTimeout(durationTimer);
       if (this.handles.get(id)?.attemptId === attemptId) this.handles.delete(id);
+      const afterTask = this.store ? this.store.get(id) : null;
+      if (budgetReservation?.enforced && task.teamId && this.budgetGuard) {
+        if (!afterTask?.executionUnresolved || afterTask.state === 'failed' || durationTimedOut || afterTask?.attemptId !== attemptId) {
+          this.budgetGuard.releaseAttempt(task.teamId, attemptId);
+        }
+      }
     }
   }
   _attemptMetadata(id, attemptId) {
@@ -1136,8 +1238,37 @@ export class Engine extends EventEmitter {
     else if (task.control === 'pause') task.state = task.executionUnresolved ? 'paused-unconfirmed' : 'paused';
     else if (task.control === 'cancel') task.state = task.executionUnresolved ? 'cancelled-unconfirmed' : 'cancelled';
     this.liveActivity.delete(task.id);
-    const willAutoRetry = !this.closed && !abandoned && result.status === 'failed' && !task.executionUnresolved && !task.verification && task.control === 'run' && task.state === 'failed' && (task.maxRetries ?? 0) > (task.retryCount ?? 0) && this._mayRun(task);
-    this._save(task, 'execution-result', { status: result.status, ...(willAutoRetry ? { autoRetryPending: true } : {}) });
+    if (result.usage && task.teamId && this.budgetGuard) {
+      const usageUpdate = this.budgetGuard.recordUsageSnapshot(task.teamId, task.attemptId, task.threadId, result.usage);
+      if (usageUpdate?.justBreached) {
+        const t = this.store.team(task.teamId);
+        if (t && t.control !== 'cancel') {
+          t.control = 'pause';
+          this._saveTeam(t, 'budget-soft-limit-paused');
+          this._applyTeamIntent(t.id, false).catch(() => {});
+        }
+      }
+    }
+    let breakerTripped = false;
+    if (task.teamId && this.budgetGuard) {
+      if (['checked', 'submitted', 'accepted'].includes(task.state)) {
+        this.budgetGuard.clearTaskErrorStreak(task.teamId, task.id);
+      } else if (task.state === 'failed' && !abandoned) {
+        const breaker = this.budgetGuard.recordTaskFailure(task.teamId, task.id, task.error || task.runtimeError || 'failed');
+        if (breaker?.tripBreaker) {
+          breakerTripped = true;
+          task.control = 'pause';
+          task.state = 'paused';
+          task.blockReason = 'same_error_breaker';
+          task.error = `Same error repeated ${breaker.consecutiveCount} times (fingerprint ${breaker.fingerprint}); paused for human review: ${task.error || ''}`;
+        }
+      }
+      if (!task.executionUnresolved) {
+        this.budgetGuard.releaseAttempt(task.teamId, task.attemptId);
+      }
+    }
+    const willAutoRetry = !breakerTripped && !this.closed && !abandoned && result.status === 'failed' && !task.executionUnresolved && !task.verification && task.control === 'run' && task.state === 'failed' && (task.maxRetries ?? 0) > (task.retryCount ?? 0) && this._mayRun(task);
+    this._save(task, breakerTripped ? 'same-error-breaker-tripped' : 'execution-result', { status: result.status, ...(willAutoRetry ? { autoRetryPending: true } : {}) });
     if (!this.closed && !abandoned && task.autoAccept === true && result.status === 'completed' && !task.executionUnresolved && this._mayRun(task) && task.state === 'checked' && task.checks.length > 0 && task.checks.some(check => check.type === 'node_test') && task.verification?.passed === true) {
       try {
         await this.accept(task.id, {
@@ -1554,6 +1685,7 @@ export class Engine extends EventEmitter {
     if (this.pumping) await this.pumping.catch(() => {});
     if (this.store) {
       for (const task of this.store.tasks()) if (executing.has(task.state)) { task.state = 'unknown'; task.executionUnresolved = true; task.error = 'Engine closed before execution was resolved'; this._save(task, 'close-unknown'); }
+      await this.delivery.close().catch(() => {});
       await this.adapter.close().catch(() => {});
       await this.nativeAdapter?.close().catch(() => {});
       this.store.close(); this.store = null;

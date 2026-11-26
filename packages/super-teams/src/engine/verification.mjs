@@ -6,10 +6,10 @@ import { isDeepStrictEqual } from 'node:util';
 import { pathMatchesWriteScopes } from './scheduler.mjs';
 import {
   exportCandidateForTesting,
-  killProcessTree,
   sealCandidateAndDiff,
   storeGitPatch,
 } from './git-worktree.mjs';
+import { buildIsolatedTestEnv, killProcessTree } from './core/src/process-isolation.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const outputLimit = 1024 * 1024;
@@ -219,23 +219,8 @@ function sourceScript(store, check) {
 
 export function validateTestSource(store, check) { if (check.type === 'node_test') sourceScript(store, check); }
 
-const SAFE_ENV_KEYS = new Set([
-  'PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'SYSTEMDRIVE',
-  'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA',
-  'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TERM', 'COLORTERM', 'NODE_NO_WARNINGS',
-]);
-
 function buildSanitizedTestEnv(testTmpDir) {
-  const env = {};
-  for (const [key, val] of Object.entries(process.env)) {
-    if (val !== undefined && SAFE_ENV_KEYS.has(key.toUpperCase())) env[key] = val;
-  }
-  // DeepSeek Harness Desktop uses Electron as process.execPath; force pure Node mode so tests never open a GUI window.
-  env.ELECTRON_RUN_AS_NODE = '1';
-  env.TMP = testTmpDir;
-  env.TEMP = testTmpDir;
-  env.TMPDIR = testTmpDir;
-  return env;
+  return buildIsolatedTestEnv(testTmpDir, { preserveElectronAsNode: true }).env;
 }
 
 function resolveWindowsNpmLaunch(args) {

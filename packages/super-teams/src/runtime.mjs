@@ -133,23 +133,34 @@ export class DshSuperTeamsRuntime {
 
   async executeTool(name, rawArgs, exec = {}) {
     exec.signal?.throwIfAborted?.();
-    const args = parseToolInput(name, rawArgs ?? {});
+    let args;
+    try {
+      args = parseToolInput(name, rawArgs ?? {});
+    } catch (err) {
+      this.engine?.recordRefusal?.('dsh-tool-schema', name, err.message, rawArgs ?? {});
+      throw err;
+    }
     const caller = callerSessionInfo(this.ctx, exec);
     if (caller.rootSessionId) {
       this.adapter.rememberSession(caller.rootSessionId, caller.cwd);
     }
 
-    if (name === 'teams_engine') {
+    try {
+      if (name === 'teams_engine') {
+        await this.ensureStarted();
+        return await this._executeTeamsEngineView(args);
+      }
+
+      if (name.startsWith('teams_')) {
+        return await this._executeTeamsTool(name, args);
+      }
+
       await this.ensureStarted();
-      return this._executeTeamsEngineView(args);
+      return await this._executeEngineTool(name, args, caller);
+    } catch (err) {
+      this.engine?.recordRefusal?.('dsh-tool', name, err.message, { action: args?.action ?? null, code: err.code ?? null });
+      throw err;
     }
-
-    if (name.startsWith('teams_')) {
-      return this._executeTeamsTool(name, args);
-    }
-
-    await this.ensureStarted();
-    return this._executeEngineTool(name, args, caller);
   }
 
   _executeTeamsEngineView(a) {
@@ -352,6 +363,8 @@ export class DshSuperTeamsRuntime {
           members: a.members,
           ...(a.workspaceMode !== undefined ? { workspaceMode: a.workspaceMode } : {}),
           ...(a.repoPath !== undefined ? { repoPath: a.repoPath } : {}),
+          ...(a.budget !== undefined ? { budget: a.budget } : {}),
+          ...(a.allowedRemoteRepos !== undefined ? { allowedRemoteRepos: a.allowedRemoteRepos } : {}),
           ...(a.action === 'prepare' ? { tasks: a.tasks } : {}),
           ...(caller.rootSessionId ? { sessionId: caller.rootSessionId } : {}),
         });
@@ -389,6 +402,12 @@ export class DshSuperTeamsRuntime {
           next: 'Assign tasks with teamId/memberId and team-scoped sources; resume the team after preparation.',
         };
       }
+      if (a.action === 'repo_probe') {
+        return engine.probeRepoEnvironment(a.repoPath);
+      }
+      if (a.action === 'security_posture') {
+        return engine.getIsolationPosture();
+      }
       if (!a.teamId) throw new Error('teamId is required');
       if (a.action === 'overview') {
         const team = engine.getTeam(a.teamId);
@@ -421,7 +440,7 @@ export class DshSuperTeamsRuntime {
       }
       if (a.action === 'candidate_approve') {
         if (!a.candidateId) throw new Error('candidateId is required');
-        return engine.approveCandidate(a.teamId, { candidateId: a.candidateId, purpose: a.purpose, branchName: a.branchName, targetRef: a.targetRef, actor, note: a.note });
+        return engine.approveCandidate(a.teamId, { candidateId: a.candidateId, purpose: a.purpose, branchName: a.branchName, targetRef: a.targetRef, actor, note: a.note, requireGoalPassed: a.requireGoalPassed });
       }
       if (a.action === 'approval_revoke') {
         if (!a.approvalId) throw new Error('approvalId is required');
@@ -446,6 +465,72 @@ export class DshSuperTeamsRuntime {
           expectedIntentId: a.expectedIntentId,
           candidateId: a.candidateId,
           linkId: a.linkId,
+        });
+      }
+      if (a.action === 'budget_get') return engine.getTeamBudget(a.teamId);
+      if (a.action === 'budget_set') return engine.setTeamBudget(a.teamId, a.budget ?? {});
+      if (a.action === 'env_recipe_approve') {
+        return engine.approveEnvRecipe(a.teamId, {
+          repoPath: a.repoPath,
+          selectedCommands: a.selectedCommands,
+          setupCommand: a.setupCommand,
+          envVars: a.envVars,
+          approvedBy: a.approvedBy ?? actor,
+        });
+      }
+      if (a.action === 'remote_push') {
+        return engine.pushCandidateRemote(a.teamId, {
+          deliveryStreamId: a.deliveryStreamId,
+          candidateId: a.candidateId,
+          approvalId: a.approvalId,
+          repo: a.repo,
+          remoteUrl: a.remoteUrl,
+          stableBranch: a.stableBranch,
+          expectedOldOid: a.expectedOldOid,
+          purpose: a.purpose,
+        });
+      }
+      if (a.action === 'remote_pr_create') {
+        return engine.createPullRequestIdempotent(a.teamId, {
+          deliveryStreamId: a.deliveryStreamId,
+          candidateId: a.candidateId,
+          approvalId: a.approvalId,
+          repo: a.repo,
+          headBranch: a.headBranch,
+          baseBranch: a.baseBranch,
+          title: a.title,
+          body: a.body,
+          draft: a.draft,
+        });
+      }
+      if (a.action === 'remote_reconcile') return engine.reconcileRemoteIntents(a.teamId, { deliveryStreamId: a.deliveryStreamId, repo: a.repo });
+      if (a.action === 'remote_unknown_resolve') {
+        return engine.resolveUnknownPrIntent(a.teamId, {
+          intentId: a.intentId,
+          action: a.reason === 'abandon' ? 'abandon' : 'bind_existing',
+          prNumber: a.prNumber,
+          actor,
+          note: a.note,
+        });
+      }
+      if (a.action === 'remote_event_ingest') {
+        return engine.ingestRemoteFailureEvent(a.teamId, {
+          deliveryStreamId: a.deliveryStreamId,
+          candidateId: a.candidateId,
+          repo: a.repo,
+          prNumber: a.prNumber,
+          headSha: a.expectedOldOid,
+          checkSignature: a.checkSignature,
+          failureSummary: a.failureSummary,
+          memberId: a.memberId,
+        });
+      }
+      if (a.action === 'remote_drift_resolve') {
+        return engine.resolveExternalDrift(a.teamId, {
+          deliveryStreamId: a.deliveryStreamId,
+          action: a.newBranch ? 'redirect_new_branch' : 'adopt_as_candidate',
+          newBranch: a.newBranch,
+          actor,
         });
       }
       if (a.action === 'archive' || a.action === 'unarchive') {

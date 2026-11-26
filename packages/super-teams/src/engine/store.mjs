@@ -86,6 +86,13 @@ export class Store {
         CREATE TABLE IF NOT EXISTS candidate_approvals (id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL, body TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS publish_intents (id TEXT PRIMARY KEY, team_id TEXT NOT NULL, body TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS pr_links (id TEXT PRIMARY KEY, team_id TEXT NOT NULL, body TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS remote_push_intents (id TEXT PRIMARY KEY, team_id TEXT NOT NULL, stream_id TEXT NOT NULL, body TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS pr_create_intents (id TEXT PRIMARY KEY, team_id TEXT NOT NULL, stream_id TEXT NOT NULL, body TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS remote_events (dedupe_key TEXT PRIMARY KEY, team_id TEXT NOT NULL, stream_id TEXT NOT NULL, candidate_id TEXT NOT NULL, body TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS delivery_streams (id TEXT PRIMARY KEY, team_id TEXT NOT NULL, body TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS budget_ledger (team_id TEXT PRIMARY KEY, body TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS refusal_log (id TEXT PRIMARY KEY, surface TEXT NOT NULL, body TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS env_recipes (id TEXT PRIMARY KEY, team_id TEXT NOT NULL, body TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS tasks_team_state ON tasks(json_extract(body,'$.teamId'), json_extract(body,'$.state'))
           WHERE json_extract(body,'$.teamId') IS NOT NULL;
         CREATE INDEX IF NOT EXISTS tasks_unresolved ON tasks(${unresolvedFlag}) WHERE ${unresolvedFlag}=1;
@@ -93,7 +100,12 @@ export class Store {
         CREATE INDEX IF NOT EXISTS candidates_team ON candidates(team_id);
         CREATE INDEX IF NOT EXISTS approvals_candidate ON candidate_approvals(candidate_id);
         CREATE INDEX IF NOT EXISTS intents_team ON publish_intents(team_id);
-        CREATE INDEX IF NOT EXISTS pr_links_team ON pr_links(team_id);`);
+        CREATE INDEX IF NOT EXISTS pr_links_team ON pr_links(team_id);
+        CREATE INDEX IF NOT EXISTS remote_push_team ON remote_push_intents(team_id);
+        CREATE INDEX IF NOT EXISTS pr_create_team ON pr_create_intents(team_id);
+        CREATE INDEX IF NOT EXISTS remote_events_team ON remote_events(team_id);
+        CREATE INDEX IF NOT EXISTS streams_team ON delivery_streams(team_id);
+        CREATE INDEX IF NOT EXISTS recipes_team ON env_recipes(team_id);`);
     } catch (error) { this.close(); throw error; }
   }
   _guard(fn) {
@@ -110,9 +122,12 @@ export class Store {
     } finally { guard.close(); }
   }
   transaction(fn) {
+    if (this._inTx) return fn();
     this.db.exec('BEGIN IMMEDIATE');
+    this._inTx = true;
     try { const value = fn(); this.db.exec('COMMIT'); return value; }
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    finally { this._inTx = false; }
   }
   tasks() { return this.db.prepare('SELECT body FROM tasks ORDER BY rowid').all().map(row => JSON.parse(row.body)); }
   unresolvedTasks() {
@@ -162,6 +177,29 @@ export class Store {
   savePrLink(record) { this.db.prepare('INSERT INTO pr_links(id,team_id,body) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(record.id, record.teamId, JSON.stringify(record)); }
   prLink(id) { const row = this.db.prepare('SELECT body FROM pr_links WHERE id=?').get(id); return row ? JSON.parse(row.body) : null; }
   teamPrLinks(teamId) { return this.db.prepare('SELECT body FROM pr_links WHERE team_id=? ORDER BY rowid').all(teamId).map(r => JSON.parse(r.body)); }
+  teamApprovals(teamId) {
+    const candidates = this.teamCandidates(teamId);
+    const all = [];
+    for (const c of candidates) all.push(...this.candidateApprovals(c.id));
+    return all;
+  }
+  saveRemotePushIntent(record) { this.db.prepare('INSERT INTO remote_push_intents(id,team_id,stream_id,body) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(record.id, record.teamId, record.deliveryStreamId, JSON.stringify(record)); }
+  teamRemotePushIntents(teamId) { return this.db.prepare('SELECT body FROM remote_push_intents WHERE team_id=? ORDER BY rowid').all(teamId).map(r => JSON.parse(r.body)); }
+  savePrCreateIntent(record) { this.db.prepare('INSERT INTO pr_create_intents(id,team_id,stream_id,body) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(record.id, record.teamId, record.deliveryStreamId, JSON.stringify(record)); }
+  prCreateIntent(id) { const row = this.db.prepare('SELECT body FROM pr_create_intents WHERE id=?').get(id); return row ? JSON.parse(row.body) : null; }
+  teamPrCreateIntents(teamId) { return this.db.prepare('SELECT body FROM pr_create_intents WHERE team_id=? ORDER BY rowid').all(teamId).map(r => JSON.parse(r.body)); }
+  saveRemoteEvent(record) { this.db.prepare('INSERT INTO remote_events(dedupe_key,team_id,stream_id,candidate_id,body) VALUES(?,?,?,?,?) ON CONFLICT(dedupe_key) DO UPDATE SET body=excluded.body').run(record.dedupeKey, record.teamId, record.deliveryStreamId, record.candidateId, JSON.stringify(record)); }
+  remoteEvent(dedupeKey) { const row = this.db.prepare('SELECT body FROM remote_events WHERE dedupe_key=?').get(dedupeKey); return row ? JSON.parse(row.body) : null; }
+  teamRemoteEvents(teamId) { return this.db.prepare('SELECT body FROM remote_events WHERE team_id=? ORDER BY rowid').all(teamId).map(r => JSON.parse(r.body)); }
+  saveDeliveryStream(record) { this.db.prepare('INSERT INTO delivery_streams(id,team_id,body) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(record.id, record.teamId, JSON.stringify(record)); }
+  deliveryStream(id) { const row = this.db.prepare('SELECT body FROM delivery_streams WHERE id=?').get(id); return row ? JSON.parse(row.body) : null; }
+  teamDeliveryStreams(teamId) { return this.db.prepare('SELECT body FROM delivery_streams WHERE team_id=? ORDER BY rowid').all(teamId).map(r => JSON.parse(r.body)); }
+  saveBudgetLedger(record) { this.db.prepare('INSERT INTO budget_ledger(team_id,body) VALUES(?,?) ON CONFLICT(team_id) DO UPDATE SET body=excluded.body').run(record.teamId, JSON.stringify(record)); }
+  budgetLedger(teamId) { const row = this.db.prepare('SELECT body FROM budget_ledger WHERE team_id=?').get(teamId); return row ? JSON.parse(row.body) : null; }
+  addRefusal(record) { this.db.prepare('INSERT INTO refusal_log(id,surface,body) VALUES(?,?,?)').run(record.id, record.surface, JSON.stringify(record)); }
+  listRefusals(limit = 50) { return this.db.prepare('SELECT body FROM refusal_log ORDER BY rowid DESC LIMIT ?').all(limit).map(r => JSON.parse(r.body)); }
+  saveEnvRecipe(record) { this.db.prepare('INSERT INTO env_recipes(id,team_id,body) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(record.id, record.teamId, JSON.stringify(record)); }
+  teamEnvRecipes(teamId) { return this.db.prepare('SELECT body FROM env_recipes WHERE team_id=? ORDER BY rowid').all(teamId).map(r => JSON.parse(r.body)); }
   close() {
     this.db?.close(); this.db = null;
     if (this.lock !== undefined) {

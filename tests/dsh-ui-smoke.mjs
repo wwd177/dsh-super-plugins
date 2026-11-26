@@ -575,7 +575,7 @@ try {
 
   await untilDual("[...window.__HOST_A__.shadowRoot.querySelectorAll('#overview button')].some(b => b.textContent.includes('预览 Git 合并') && b.dataset.unavailable === 'false')");
   await evalDual("[...window.__HOST_A__.shadowRoot.querySelectorAll('#overview button')].find(b => b.textContent.includes('预览 Git 合并')).click()");
-  await untilDual("window.__HOST_A__.shadowRoot.querySelector('#notice').textContent.includes('合并预览通过')");
+  await untilDual("window.__HOST_A__.shadowRoot.querySelector('#notice').textContent.includes('合并预览通过') && [...window.__HOST_A__.shadowRoot.querySelectorAll('#overview button')].some(b => b.textContent.includes('生成冻结候选') && !b.disabled && b.dataset.unavailable === 'false')");
   await evalDual(`(() => {
     const s = window.__HOST_A__.shadowRoot;
     const det = [...s.querySelectorAll('#overview details')].find(d => d.textContent.includes('Git Worktree 冻结候选'));
@@ -583,7 +583,7 @@ try {
     det.querySelector('input[data-merge-branch]').value = 'ui-smoke-branch';
     [...det.querySelectorAll('button')].find(b => b.textContent.includes('生成冻结候选')).click();
   })()`);
-  await untilDual("window.__HOST_A__.shadowRoot.querySelector('#notice').textContent.includes('已生成冻结候选')");
+  await untilDual("window.__HOST_A__.shadowRoot.querySelector('#notice').textContent.includes('已生成冻结候选') && [...window.__HOST_A__.shadowRoot.querySelectorAll('#overview button')].some(b => b.textContent.includes('批准并发布当前候选') && !b.disabled)");
   await evalDual(`(() => {
     const s = window.__HOST_A__.shadowRoot;
     const det = [...s.querySelectorAll('#overview details')].find(d => d.textContent.includes('Git Worktree 冻结候选'));
@@ -597,8 +597,196 @@ try {
   assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd: gitRepoDir, encoding: 'utf8' }).trim(), '', 'Live working tree must remain completely untouched');
   const gitShellOverflow = await evalDual("(() => { const sh = window.__HOST_A__.shadowRoot.getElementById('sa-shell'); return sh.scrollWidth - sh.clientWidth; })()");
   assert.ok(gitShellOverflow <= 1, `Expected <=1px overflow on 400px Git Worktree sidebar, got +${gitShellOverflow}px`);
-  await evalDual("(window.__CLEANUPS__ || []).forEach(fn => { try { fn(); } catch {} });");
   checks.push('sidebar_new_team_git_worktree_form_and_merge_preview_apply_ui');
+
+  // 11. v0.19 Governance & Delivery UI E2E: Probe + Budget + Case A/B/C + Candidate Switch Clears Approval + PR 3-State + Zero Overflow
+  const v19RepoDir = path.join(tempRoot, 'ui-v19-repo');
+  fs.mkdirSync(v19RepoDir, { recursive: true });
+  execFileSync('git', ['init', '-b', 'main'], { cwd: v19RepoDir, stdio: 'pipe' });
+  execFileSync('git', ['config', 'user.name', 'UI v19'], { cwd: v19RepoDir, stdio: 'pipe' });
+  execFileSync('git', ['config', 'user.email', 'uiv19@example.test'], { cwd: v19RepoDir, stdio: 'pipe' });
+  fs.writeFileSync(path.join(v19RepoDir, 'package.json'), JSON.stringify({ name: 'dsh-ui-v19', scripts: { test: 'node --test' } }));
+  fs.writeFileSync(path.join(v19RepoDir, 'package-lock.json'), '{}');
+  fs.writeFileSync(path.join(v19RepoDir, 'README.md'), '# v19 Repo\n');
+  execFileSync('git', ['add', '-A'], { cwd: v19RepoDir, stdio: 'pipe' });
+  execFileSync('git', ['commit', '-m', 'init'], { cwd: v19RepoDir, stdio: 'pipe' });
+
+  const origDshPrReconcile = engine.reconcileGitHubPr.bind(engine);
+  engine.reconcileGitHubPr = (id, opts = {}) => origDshPrReconcile(id, {
+    ...opts,
+    transport: opts.transport ?? {
+      async getPullRequest({ prNumber }) {
+        return {
+          number: prNumber,
+          title: 'PR with extra remote commit',
+          url: `https://github.com/org/dsh-e2e/pull/${prNumber}`,
+          state: 'closed',
+          merged: true,
+          merge_commit_sha: 'd'.repeat(40),
+          head: { sha: 'e'.repeat(40), ref: 'superagent/dsh-v19-c2', repo: { full_name: 'org/dsh-e2e' } },
+          base: { ref: 'main', repo: { full_name: 'org/dsh-e2e' } },
+          body: 'Squash merged remotely',
+        };
+      },
+      async listPullRequests() { return []; },
+      async listCheckRuns() { return []; },
+    },
+  });
+
+  await evalDual(`(() => {
+    const s = window.__HOST_A__.shadowRoot;
+    s.querySelector('#new-team').click();
+    const mode = s.querySelector('#team-workspace-mode');
+    mode.value = 'git-worktree';
+    mode.dispatchEvent(new Event('change'));
+    s.querySelector('#team-repo-path').value = ${JSON.stringify(v19RepoDir)};
+    s.querySelector('#probe-repo-btn').click();
+  })()`);
+  await untilDual("window.__HOST_A__.shadowRoot.querySelector('#repo-probe-result')?.textContent.includes('autoSelected=false') && window.__HOST_A__.shadowRoot.querySelector('#repo-probe-result').textContent.includes('npm test')");
+
+  await evalDual(`(async () => {
+    const s = window.__HOST_A__.shadowRoot;
+    const form = s.querySelector('#team-form');
+    form.querySelector(':scope > label input[name="name"]').value = 'DSH-v19-交付团队';
+    form.querySelector('textarea[name="goal"]').value = '完成特性开发。人工兼容复核。';
+    s.querySelector('#team-soft-token').value = '120000';
+    s.querySelector('#team-max-duration').value = '600';
+    s.querySelector('#team-max-attempts').value = '10';
+    while (s.querySelectorAll('#member-fields .member-fields').length > 1) {
+      const rows = [...s.querySelectorAll('#member-fields .member-fields')];
+      rows[rows.length - 1].querySelector('[data-remove-member]').click();
+      await new Promise(r => setTimeout(r, 20));
+    }
+    const row0 = s.querySelector('#member-fields .member-fields');
+    row0.querySelector('input[name="name"]').value = '开发者';
+    row0.querySelector('input[name="role"]').value = '工程师';
+    row0.querySelector('textarea[name="responsibility"]').value = '完成修改';
+    s.querySelector('#create-team').click();
+  })()`);
+  await untilDual("window.__HOST_A__.shadowRoot.querySelector('#overview').textContent.includes('DSH-v19-交付团队') && window.__HOST_A__.shadowRoot.querySelector('[data-v19-panel=\"governance\"]')?.textContent.includes('120,000') && window.__HOST_A__.shadowRoot.querySelector('[data-v19-panel=\"governance\"]')?.textContent.includes('600s')");
+
+  const v19TeamId = await evalDual("window.__HOST_A__.shadowRoot.querySelector('#team-select').value");
+  const v19Team = engine.getTeam(v19TeamId);
+  const v19Task = await engine.submit({
+    requestId: 'dsh-v19-t1-' + randomUUID(),
+    teamId: v19Team.id,
+    memberId: v19Team.members[0].id,
+    title: '实现 v19 特性',
+    goal: '创建 src/git-feature.txt',
+    writeScopes: ['src/git-feature.txt'],
+    checks: [{ type: 'file_contains', path: 'src/git-feature.txt', value: 'git-worktree-ui-verified' }],
+  });
+  await engine.teamControl(v19Team.id, 'resume');
+  const dlV19 = Date.now() + 10000;
+  while (Date.now() < dlV19 && engine.get(v19Task.id).state !== 'checked') await new Promise(ok => setTimeout(ok, 40));
+  const v19Acc = await engine.accept(v19Task.id, { expectedRevision: engine.get(v19Task.id).revision, reason: 'accept v19 task' });
+
+  // Case A: verification_failed candidate blocked from approval in UI
+  const dshFailCand = await engine.createCandidate(v19Team.id, {
+    taskIds: [v19Acc.id],
+    integrationCheck: { type: 'node_test', path: 'src/git-feature.txt', testScript: 'process.exit(1);' },
+  });
+  assert.equal(dshFailCand.candidate.status, 'verification_failed');
+  await untilDual(`window.__HOST_A__.shadowRoot.querySelector('[data-v19-candidate-select]')?.value === ${JSON.stringify(dshFailCand.candidate.id)} && window.__HOST_A__.shadowRoot.querySelector('[data-v19-panel="delivery"]')?.textContent.includes('集成检查未通过')`);
+  await evalDual("window.__HOST_A__.shadowRoot.querySelector('[data-action=\"approve-candidate\"]').click()");
+  await untilDual("window.__HOST_A__.shadowRoot.querySelector('[data-v19-status=\"delivery\"]')?.textContent.includes('failed verification') || window.__HOST_A__.shadowRoot.querySelector('#notice')?.textContent.includes('failed verification')");
+  assert.equal((engine.getTeam(v19Team.id).approvals || []).length, 0);
+
+  // Case B: Freeze criteria -> signoff -> C1 approve -> revise -> C2 -> reject C1 approval on C2 -> UI switch clears approvalId -> re-approve C2 -> publish
+  await evalDual(`(() => {
+    const s = window.__HOST_A__.shadowRoot;
+    const area = s.querySelector('[data-v19-criteria-lines]');
+    area.value = '完成特性开发\\n[signoff] 人工兼容复核';
+    area.dispatchEvent(new Event('input'));
+    s.querySelector('[data-action="criteria-freeze"]').click();
+  })()`);
+  await untilDual("Boolean(window.__HOST_A__.shadowRoot.querySelector('[data-action=\"criteria-signoff\"]'))");
+
+  await evalDual(`(() => {
+    const s = window.__HOST_A__.shadowRoot;
+    [...s.querySelectorAll('#overview button')].find(b => b.textContent.includes('生成冻结候选')).click();
+  })()`);
+  await untilDual("window.__HOST_A__.shadowRoot.querySelectorAll('[data-v19-candidate-select] option').length === 2");
+  const dshC1Id = await evalDual("window.__HOST_A__.shadowRoot.querySelector('[data-v19-candidate-select]').value");
+
+  await evalDual(`(() => {
+    const s = window.__HOST_A__.shadowRoot;
+    const br = s.querySelector('[data-v19-branch]');
+    br.value = 'dsh-v19-c2';
+    br.dispatchEvent(new Event('input'));
+    s.querySelector('[data-action="approve-candidate"]').click();
+  })()`);
+  await untilDual("Boolean(window.__HOST_A__.shadowRoot.querySelector('[data-v19-approval-select]')?.value)");
+  const dshAppC1 = await evalDual("window.__HOST_A__.shadowRoot.querySelector('[data-v19-approval-select]').value");
+
+  await evalDual(`(() => {
+    const s = window.__HOST_A__.shadowRoot;
+    const rg = s.querySelector('[data-v19-revise-goal]');
+    rg.value = '基于 C1 修订兼容';
+    rg.dispatchEvent(new Event('input'));
+    s.querySelector('[data-action="revise-candidate"]').click();
+  })()`);
+  await untilDual("window.__HOST_A__.shadowRoot.querySelector('#notice')?.textContent.includes('已提交集成修订任务')");
+  const dshRevTask = engine.getTeam(v19Team.id).tasks.find(x => x.revisionOfCandidateId === dshC1Id);
+  assert.ok(dshRevTask);
+  const dlDshRev = Date.now() + 10000;
+  while (Date.now() < dlDshRev && engine.get(dshRevTask.id).state !== 'submitted') await new Promise(ok => setTimeout(ok, 40));
+  await engine.accept(dshRevTask.id, { expectedRevision: engine.get(dshRevTask.id).revision, reason: 'accept ui rev' });
+
+  await evalDual("([...window.__HOST_A__.shadowRoot.querySelectorAll('#overview button')].find(b => b.textContent.includes('生成冻结候选'))).click()");
+  await untilDual("window.__HOST_A__.shadowRoot.querySelectorAll('[data-v19-candidate-select] option').length === 3");
+  const dshC2Id = await evalDual("window.__HOST_A__.shadowRoot.querySelector('[data-v19-candidate-select]').value");
+
+  await assert.rejects(
+    () => engine.publishCandidateLocal(v19Team.id, { candidateId: dshC2Id, approvalId: dshAppC1, branchName: 'dsh-v19-c2' }),
+    err => err.code === 'APPROVAL_CANDIDATE_MISMATCH',
+  );
+  assert.equal(execFileSync('git', ['branch', '--list', 'superagent/dsh-v19-c2'], { cwd: v19RepoDir, encoding: 'utf8' }).trim(), '');
+
+  const dshSwitchRes = await evalDual(`(() => {
+    const s = window.__HOST_A__.shadowRoot;
+    const sel = s.querySelector('[data-v19-candidate-select]');
+    sel.value = ${JSON.stringify(dshC1Id)};
+    sel.dispatchEvent(new Event('change'));
+    sel.value = ${JSON.stringify(dshC2Id)};
+    sel.dispatchEvent(new Event('change'));
+    const valAfter = s.querySelector('[data-v19-approval-select]').value;
+    const optsAfter = [...s.querySelectorAll('[data-v19-approval-select] option')].map(o => o.value);
+    return { valAfter, hasOldApp: optsAfter.includes(${JSON.stringify(dshAppC1)}) };
+  })()`);
+  assert.equal(dshSwitchRes.valAfter, '');
+  assert.equal(dshSwitchRes.hasOldApp, false);
+
+  await evalDual("window.__HOST_A__.shadowRoot.querySelector('[data-action=\"criteria-signoff\"]').click()");
+  await untilDual("window.__HOST_A__.shadowRoot.querySelector('#notice')?.textContent.includes('具名人工')");
+  await evalDual(`(() => {
+    const s = window.__HOST_A__.shadowRoot;
+    const br = s.querySelector('[data-v19-branch]');
+    br.value = 'dsh-v19-c2';
+    br.dispatchEvent(new Event('input'));
+    s.querySelector('[data-action="approve-candidate"]').click();
+  })()`);
+  await untilDual("Boolean(window.__HOST_A__.shadowRoot.querySelector('[data-v19-approval-select]')?.value)");
+  await evalDual("window.__HOST_A__.shadowRoot.querySelector('[data-action=\"publish-with-approval\"]').click()");
+  await untilDual("window.__HOST_A__.shadowRoot.querySelector('#notice')?.textContent.includes('superagent/dsh-v19-c2')");
+  assert.match(execFileSync('git', ['branch', '--list', 'superagent/dsh-v19-c2'], { cwd: v19RepoDir, encoding: 'utf8' }), /superagent\/dsh-v19-c2/);
+
+  // Case C: Revoke approval + posture + PR 3-state + zero overflow
+  await evalDual("window.__HOST_A__.shadowRoot.querySelector('[data-action=\"revoke-approval\"]').click()");
+  await untilDual("window.__HOST_A__.shadowRoot.querySelector('#notice')?.textContent.includes('已撤销批准')");
+  await evalDual("window.__HOST_A__.shadowRoot.querySelector('[data-action=\"refresh-posture\"]').click()");
+  await untilDual("window.__HOST_A__.shadowRoot.querySelector('[data-v19-posture-box]')?.textContent.includes('env_and_config_isolated_same_os_user')");
+  await evalDual(`(() => {
+    const s = window.__HOST_A__.shadowRoot;
+    const r = s.querySelector('[data-v19-pr-repo]'); r.value = 'org/dsh-e2e'; r.dispatchEvent(new Event('input'));
+    const n = s.querySelector('[data-v19-pr-number]'); n.value = '7'; n.dispatchEvent(new Event('input'));
+    s.querySelector('[data-action="pr-reconcile"]').click();
+  })()`);
+  await untilDual("window.__HOST_A__.shadowRoot.querySelector('[data-v19-pr-pills]')?.textContent.includes('1. 本地集成发布：已发布本地分支') && window.__HOST_A__.shadowRoot.querySelector('[data-v19-pr-pills]')?.textContent.includes('2. 远端 PR：已合入 (存在版本差异)') && window.__HOST_A__.shadowRoot.querySelector('[data-v19-pr-pills]')?.textContent.includes('远端已合入但本地未变绿')");
+  const v19Overflow = await evalDual("(() => { const sh = window.__HOST_A__.shadowRoot.getElementById('sa-shell'); return sh.scrollWidth - sh.clientWidth; })()");
+  assert.ok(v19Overflow <= 1, `Expected <=1px overflow on 400px v0.19 sidebar, got +${v19Overflow}px`);
+  await evalDual("(window.__CLEANUPS__ || []).forEach(fn => { try { fn(); } catch {} });");
+  checks.push('v019_ui_probe_budget_cases_abc_and_zero_overflow');
 
   assert.equal(errors.length, 0, `Unexpected runtime exceptions: ${JSON.stringify(errors)}`);
   console.log(JSON.stringify({ passed: true, checksCount: checks.length, checks }, null, 2));

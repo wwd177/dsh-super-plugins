@@ -3,7 +3,7 @@ import { canonicalJson } from './goal-criteria.mjs';
 
 const hashText = text => createHash('sha256').update(String(text)).digest('hex');
 
-export const APPROVAL_PURPOSES = Object.freeze(['local_publish', 'draft_pr', 'request_merge']);
+export const APPROVAL_PURPOSES = Object.freeze(['local_publish', 'remote_push', 'draft_pr', 'request_merge']);
 
 /**
  * 规范化交付候选条目清单，保证双宿主（Codex 与 DSH）对相同输入产出完全一致的清单与摘要（R1 + R3）。

@@ -95,6 +95,494 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
   let refreshFlight = null, refreshAgain = false, refreshTimer = null, tokenFlight = null, reconnectAttempt = 0, connectionProblem = '';
   let streamAbort = null, streamConnected = false, streamRetryTimer = null, sseDebounce = null;
   let changePollTimer = null, lastChangeSeq = 0;
+  const selectedCandidateByTeam = new Map(), selectedApprovalByTeam = new Map(), knownCandidateCountByTeam = new Map(), prReconcileByTeam = new Map(), v19Drafts = new Map(), repoProbeByTeam = new Map();
+  let lastSecurityPosture = null, lastRefusals = null, pendingCreateBudget = null;
+  const v19Draft = teamId => { if (!v19Drafts.has(teamId)) v19Drafts.set(teamId, {}); return v19Drafts.get(teamId); };
+  const v19FmtErr = err => (err ? ((err.code ? `[${err.code}] ` : '') + (err.message || String(err))) : '未知错误');
+  const v19SplitGoalLines = goal => {
+    const parts = String(goal || '').split(/[。！？\r\n]+/).map(s => s.trim()).filter(Boolean);
+    return parts.length ? parts.join('\n') : '完成目标验收条文';
+  };
+  const v19ParseCriteriaLines = (text, tasks = []) => {
+    const list = Array.isArray(tasks) ? tasks : [];
+    const preferred = list.filter(t => ['accepted', 'checked', 'submitted', 'running', 'queued'].includes(t.state));
+    const pool = preferred.length ? preferred : list;
+    return String(text || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean).map((line, idx) => {
+      const m = /^\[(?:signoff|人工签认|人工)\]\s*(.+)$/i.exec(line);
+      if (m) return { id: `c-${idx + 1}`, requirementText: m[1].trim(), mandatory: true, verificationMode: 'human_signoff', signoffRole: 'maintainer' };
+      const tm = /^\[task:([^\]]+)\]\s*(.+)$/i.exec(line);
+      if (tm) return { id: `c-${idx + 1}`, requirementText: tm[2].trim(), mandatory: true, verificationMode: 'check', taskId: tm[1].trim() };
+      if (pool.length) {
+        const byText = pool.find(t => (t.title && line.includes(t.title)) || (t.goal && t.goal.includes(line)));
+        const bound = byText || pool[idx % pool.length];
+        return { id: `c-${idx + 1}`, requirementText: line, mandatory: true, verificationMode: 'check', taskId: bound.id };
+      }
+      return { id: `c-${idx + 1}`, requirementText: line, mandatory: true, verificationMode: 'human_signoff', signoffRole: 'maintainer' };
+    });
+  };
+  const v19SetCardStatus = (box, msg, isError = false) => {
+    if (!box) return;
+    box.textContent = msg || '';
+    box.className = isError ? 'error' : 'hint';
+    box.hidden = !msg;
+  };
+  async function v19ApplyPendingBudget(team) {
+    if (!pendingCreateBudget || !team || team.name !== pendingCreateBudget.teamName) return;
+    const payload = pendingCreateBudget.budget;
+    pendingCreateBudget = null;
+    try {
+      await api('/teams/' + encodeURIComponent(team.id) + '/budget', 'POST', payload);
+      await refresh(true);
+    } catch (err) { notice('创建后写入预算失败：' + v19FmtErr(err)); }
+  }
+  function v19BuildGovernanceCard(team) {
+    const wrap = node('section', undefined, 'v19-card v19-gov-card');
+    wrap.dataset.v19Panel = 'governance'; wrap.dataset.v19Team = team.id;
+    wrap.append(node('h3', '运行预算、环境配方与安全态势（v0.19）'));
+    const statusEl = node('p', '', 'hint'); statusEl.dataset.v19Status = 'governance'; statusEl.hidden = true;
+    const draft = v19Draft(team.id);
+    const b = team.budget || {}; const cfg = b.config || {};
+    const usedTokens = Number(b.totalTokens || 0);
+    const softLimit = cfg.maxTeamTokensSoft ? Number(cfg.maxTeamTokensSoft) : null;
+    const pct = softLimit ? Math.min(100, Math.round((usedTokens / softLimit) * 100)) : 0;
+    const budgetRow = node('div', undefined, 'v19-subpanel');
+    budgetRow.style.borderTop = 'none'; budgetRow.style.paddingTop = '0'; budgetRow.style.marginTop = '0';
+    const summaryParts = [
+      `Tokens ${usedTokens.toLocaleString()}${softLimit ? ` / ${softLimit.toLocaleString()} (软上限 ${pct}%)` : ' (未设软上限)'}`,
+      `尝试次数 ${Number(b.attemptsUsed || 0)}${cfg.maxTeamAttempts ? ` / ${cfg.maxTeamAttempts}` : ''}`,
+      ...(cfg.maxTaskDurationMs ? [`单任务上限 ${Math.round(cfg.maxTaskDurationMs / 1000)}s`] : []),
+    ];
+    budgetRow.append(node('p', summaryParts.join(' · '), 'meta'));
+    if (softLimit) {
+      const bar = node('div', undefined, 'v19-progress');
+      const fill = node('div', undefined, 'v19-progress-fill' + (b.softLimitExceeded ? ' danger' : (pct >= 80 ? ' warn' : '')));
+      fill.style.width = pct + '%'; bar.append(fill); budgetRow.append(bar);
+    }
+    if (b.softLimitExceeded || b.frozenReason) {
+      const pills = node('div', undefined, 'v19-pills');
+      if (b.softLimitExceeded) pills.append(node('span', `已触及 Token 软上限（在途暴露 ${Number(b.inFlightExposureAtBreach || 0)} 项）`, 'v19-pill warn'));
+      if (b.frozenReason) pills.append(node('span', `预算熔断原因：${b.frozenReason}`, 'v19-pill error'));
+      budgetRow.append(pills);
+    }
+    const bGrid = node('div', undefined, 'v19-grid');
+    const fTok = node('label', undefined, 'v19-field'); fTok.append(node('span', 'Token 软上限'));
+    const inTok = document.createElement('input'); inTok.type = 'number'; inTok.min = '1000'; inTok.step = '1000'; inTok.dataset.v19BudgetTokens = '1';
+    inTok.value = draft.budgetTokens ?? (cfg.maxTeamTokensSoft ?? ''); inTok.placeholder = '例如 200000';
+    inTok.addEventListener('input', () => { draft.budgetTokens = inTok.value; }); fTok.append(inTok);
+    const fDur = node('label', undefined, 'v19-field'); fDur.append(node('span', '单任务耗时上限（秒）'));
+    const inDur = document.createElement('input'); inDur.type = 'number'; inDur.min = '5'; inDur.step = '5'; inDur.dataset.v19BudgetDuration = '1';
+    inDur.value = draft.budgetDuration ?? (cfg.maxTaskDurationMs ? String(Math.round(cfg.maxTaskDurationMs / 1000)) : ''); inDur.placeholder = '例如 1800';
+    inDur.addEventListener('input', () => { draft.budgetDuration = inDur.value; }); fDur.append(inDur);
+    const fAtt = node('label', undefined, 'v19-field'); fAtt.append(node('span', '最大总尝试次数'));
+    const inAtt = document.createElement('input'); inAtt.type = 'number'; inAtt.min = '1'; inAtt.step = '1'; inAtt.dataset.v19BudgetAttempts = '1';
+    inAtt.value = draft.budgetAttempts ?? (cfg.maxTeamAttempts ?? ''); inAtt.placeholder = '例如 24';
+    inAtt.addEventListener('input', () => { draft.budgetAttempts = inAtt.value; }); fAtt.append(inAtt);
+    bGrid.append(fTok, fDur, fAtt); budgetRow.append(bGrid);
+    const bAct = node('div', undefined, 'actions');
+    const saveBudgetBtn = button('保存预算设置', async () => {
+      try {
+        const body = {};
+        const tVal = Number(inTok.value); body.maxTeamTokensSoft = inTok.value && Number.isInteger(tVal) && tVal >= 1 ? tVal : null;
+        const dVal = Number(inDur.value); body.maxTaskDurationMs = inDur.value && Number.isFinite(dVal) && dVal >= 1 ? Math.round(dVal * 1000) : null;
+        const aVal = Number(inAtt.value); body.maxTeamAttempts = inAtt.value && Number.isInteger(aVal) && aVal >= 1 ? aVal : null;
+        await api('/teams/' + encodeURIComponent(team.id) + '/budget', 'POST', body);
+        v19SetCardStatus(statusEl, '已更新团队运行预算限制。');
+        notice('已保存运行预算限制。');
+        await refresh(true);
+      } catch (err) { v19SetCardStatus(statusEl, v19FmtErr(err), true); notice(v19FmtErr(err)); }
+    }, 'budget:' + team.id);
+    saveBudgetBtn.dataset.action = 'save-budget'; bAct.append(saveBudgetBtn); budgetRow.append(bAct);
+    wrap.append(budgetRow);
+
+    const envSub = node('div', undefined, 'v19-subpanel');
+    const recipes = Array.isArray(team.envRecipes) ? team.envRecipes : [];
+    envSub.append(node('p', recipes.length ? `已批准环境配方：${recipes.length} 份（最近哈希 ${recipes.at(-1).recipeHash.slice(0, 12)}）` : '尚未批准仓库测试环境配方（探测只列候选命令，绝不暗选）。', 'meta'));
+    const probeData = repoProbeByTeam.get(team.id);
+    if (probeData) {
+      const cmds = Array.isArray(probeData.candidateCommands) ? probeData.candidateCommands : [];
+      envSub.append(node('p', `探测生态：${(probeData.ecosystems || []).join(', ') || '未识别'} · 锁文件：${(probeData.lockfiles || []).map(l => l.file).join(', ') || '无'} · 候选命令 ${cmds.length} 条`, 'hint'));
+      if (cmds.length) {
+        const approveEnvBtn = button('批准探测首条命令为环境配方', async () => {
+          try {
+            const first = cmds[0];
+            const rec = await api('/teams/' + encodeURIComponent(team.id) + '/env-recipes', 'POST', { repoPath: team.repoPath, selectedCommands: [`${first.command} ${(first.args || []).join(' ')}`.trim()], approvedBy: 'dashboard:maintainer' });
+            v19SetCardStatus(statusEl, `已批准环境配方 ${rec.recipeHash.slice(0, 12)}。`);
+            notice(`已批准环境配方 ${rec.recipeHash.slice(0, 12)}。`);
+            await refresh(true);
+          } catch (err) { v19SetCardStatus(statusEl, v19FmtErr(err), true); notice(v19FmtErr(err)); }
+        }, 'env:' + team.id);
+        approveEnvBtn.dataset.action = 'approve-env-recipe'; envSub.append(approveEnvBtn);
+      }
+    }
+    const secRow = node('div', undefined, 'actions');
+    if (team.repoPath) {
+      const probeTeamBtn = button('探测仓库测试命令', async () => {
+        try {
+          const res = await api('/repo/probe', 'POST', { repoPath: team.repoPath });
+          repoProbeByTeam.set(team.id, res);
+          v19SetCardStatus(statusEl, `探测完成：发现 ${(res.candidateCommands || []).length} 条候选命令（需人工确认，autoSelected=${res.autoSelected}）。`);
+          await refresh(true);
+        } catch (err) { v19SetCardStatus(statusEl, v19FmtErr(err), true); notice(v19FmtErr(err)); }
+      }, 'probe:' + team.id, 'quiet');
+      probeTeamBtn.dataset.action = 'probe-team-repo'; secRow.append(probeTeamBtn);
+    }
+    const postureBox = node('div', undefined, 'v19-list'); postureBox.dataset.v19PostureBox = '1';
+    const renderPostureContent = (p, ref) => {
+      postureBox.replaceChildren();
+      if (p) {
+        const tools = (p.toolchains || []).map(t => `${t.command}:${t.status}`).join(' · ');
+        postureBox.append(node('div', `隔离边界：${p.isolationLevel} | 工具链：${tools}`, 'v19-item'));
+        if (p.boundaryDisclosure) postureBox.append(node('p', p.boundaryDisclosure, 'hint'));
+      }
+      const rList = ref?.refusals || [];
+      if (rList.length) postureBox.append(node('div', `最近系统拒绝记录（${rList.length} 条）：` + rList.slice(0, 3).map(r => r.reason || r.code || r.action).join('；'), 'v19-item'));
+    };
+    if (lastSecurityPosture) renderPostureContent(lastSecurityPosture, lastRefusals);
+    const postureBtn = button('刷新安全态势与拒绝日志', async () => {
+      try {
+        const [p, ref] = await Promise.all([api('/security/posture'), api('/refusals?limit=10')]);
+        lastSecurityPosture = p; lastRefusals = ref;
+        renderPostureContent(p, ref);
+        v19SetCardStatus(statusEl, `安全态势已更新：${p.isolationLevel}。`);
+      } catch (err) { v19SetCardStatus(statusEl, v19FmtErr(err), true); notice(v19FmtErr(err)); }
+    }, 'posture:' + team.id, 'quiet');
+    postureBtn.dataset.action = 'refresh-posture'; secRow.append(postureBtn);
+    envSub.append(secRow, postureBox); wrap.append(envSub, statusEl);
+    return wrap;
+  }
+  function v19MountOverviewPanels(team, tasks) {
+    const ov = $('overview');
+    if (!ov || !team || selectedTeam !== team.id) return;
+    const oldGov = ov.querySelector('[data-v19-panel="governance"]'); if (oldGov) oldGov.remove();
+    const oldDel = ov.querySelector('[data-v19-panel="delivery"]'); if (oldDel) oldDel.remove();
+    ov.append(v19BuildGovernanceCard(team));
+    if (team.workspaceMode !== 'git-worktree') return;
+    const mergeInput = ov.querySelector('input[data-merge-branch]');
+    const card = node('section', undefined, 'v19-card v19-delivery-card');
+    card.dataset.v19Panel = 'delivery'; card.dataset.v19Team = team.id;
+    card.append(node('h3', '冻结候选交付、目标门禁签认与只读 PR 对账（v0.19）'));
+    const statusEl = node('p', '', 'hint'); statusEl.dataset.v19Status = 'delivery'; statusEl.hidden = true;
+    const draft = v19Draft(team.id);
+    const cands = Array.isArray(team.candidates) ? team.candidates : [];
+    const prevCandCount = knownCandidateCountByTeam.get(team.id);
+    let selCandId = selectedCandidateByTeam.get(team.id);
+    if (!cands.some(c => c.id === selCandId) || (prevCandCount !== undefined && cands.length > prevCandCount)) {
+      selCandId = cands.at(-1)?.id || '';
+      if (selCandId) selectedCandidateByTeam.set(team.id, selCandId); else selectedCandidateByTeam.delete(team.id);
+      selectedApprovalByTeam.delete(team.id);
+    }
+    knownCandidateCountByTeam.set(team.id, cands.length);
+    const cand = cands.find(c => c.id === selCandId) || null;
+
+    const critSec = node('div', undefined, 'v19-subpanel'); critSec.style.borderTop = 'none'; critSec.style.marginTop = '0'; critSec.style.paddingTop = '0';
+    critSec.append(node('h4', '1. 目标原话门禁冻结与具名人工签认'));
+    const gc = team.goalCriteria || null;
+    if (gc) {
+      critSec.append(node('p', `已冻结门禁 rev.${gc.revision}（gateHash ${String(gc.gateHash || '').slice(0, 10)}）· 未映射片段：${(gc.unmappedSegments || []).length}`, 'meta'));
+      if ((gc.unmappedSegments || []).length) critSec.append(node('p', '未覆盖原话片段：' + gc.unmappedSegments.map(s => s.text).join('；'), 'error'));
+    }
+    const critLinesLabel = node('label', undefined, 'v19-field'); critLinesLabel.append(node('span', '验收条文（每行一条；以 [signoff] 开头可设为人签必达条文）'));
+    const critArea = document.createElement('textarea'); critArea.rows = 3; critArea.dataset.v19CriteriaLines = '1';
+    critArea.value = draft.criteriaLines ?? (gc?.criteria?.length ? gc.criteria.map(c => (c.verificationMode === 'human_signoff' ? '[signoff] ' : '') + c.requirementText).join('\n') : v19SplitGoalLines(team.goal));
+    critArea.addEventListener('input', () => { draft.criteriaLines = critArea.value; }); critLinesLabel.append(critArea);
+    const signerLabel = node('label', undefined, 'v19-field'); signerLabel.append(node('span', '维护者 / 签认人署名'));
+    const signerInput = document.createElement('input'); signerInput.type = 'text'; signerInput.dataset.v19Signer = '1';
+    signerInput.value = draft.signer ?? 'maintainer-alice'; signerInput.addEventListener('input', () => { draft.signer = signerInput.value; }); signerLabel.append(signerInput);
+    const critBtn = button('冻结目标需求', async () => {
+      try {
+        const criteria = v19ParseCriteriaLines(critArea.value, tasks);
+        const res = await api('/teams/' + encodeURIComponent(team.id) + '/criteria/freeze', 'POST', { confirmedBy: signerInput.value.trim() || 'maintainer-ui', criteria });
+        v19SetCardStatus(statusEl, `已冻结目标需求 rev.${res.revision}（含 ${res.criteria.length} 条目，未映射 ${(res.unmappedSegments || []).length} 项）。`);
+        notice(`已冻结目标需求 rev.${res.revision}。`);
+        await refresh(true);
+      } catch (err) { v19SetCardStatus(statusEl, v19FmtErr(err), true); notice(v19FmtErr(err)); }
+    }, 'criteria-freeze:' + team.id);
+    critBtn.dataset.action = 'criteria-freeze';
+    const critAct = node('div', undefined, 'actions'); critAct.append(critBtn);
+    critSec.append(critLinesLabel, signerLabel, critAct);
+    if (gc?.criteria?.length) {
+      const sGrid = node('div', undefined, 'v19-grid');
+      const cSelWrap = node('label', undefined, 'v19-field'); cSelWrap.append(node('span', '选择条文签认'));
+      const cSel = document.createElement('select'); cSel.dataset.v19SignoffCriterion = '1';
+      for (const item of gc.criteria) {
+        const o = document.createElement('option'); o.value = item.id; o.textContent = `[${item.verificationMode}] ${item.requirementText}`;
+        cSel.append(o);
+      }
+      const prefSignoff = gc.criteria.find(c => c.verificationMode === 'human_signoff');
+      if (draft.signoffCriterionId && gc.criteria.some(c => c.id === draft.signoffCriterionId)) cSel.value = draft.signoffCriterionId;
+      else if (prefSignoff) cSel.value = prefSignoff.id;
+      cSel.addEventListener('change', () => { draft.signoffCriterionId = cSel.value; }); cSelWrap.append(cSel);
+      const nWrap = node('label', undefined, 'v19-field'); nWrap.append(node('span', '签认备注'));
+      const nIn = document.createElement('input'); nIn.type = 'text'; nIn.dataset.v19SignoffNote = '1'; nIn.value = draft.signoffNote ?? 'Verified manually';
+      nIn.addEventListener('input', () => { draft.signoffNote = nIn.value; }); nWrap.append(nIn);
+      sGrid.append(cSelWrap, nWrap);
+      const signBtn = button('签署人工验收签认', async () => {
+        try {
+          await api('/teams/' + encodeURIComponent(team.id) + '/criteria/signoff', 'POST', {
+            criterionId: cSel.value, ...(cand ? { candidateId: cand.id } : {}),
+            signer: signerInput.value.trim() || 'maintainer-ui', note: nIn.value.trim() || 'Manual signoff',
+          });
+          v19SetCardStatus(statusEl, `已记录条文 ${cSel.value} 的具名人工签认。`);
+          notice('已记录具名人工验收签认。');
+          await refresh(true);
+        } catch (err) { v19SetCardStatus(statusEl, v19FmtErr(err), true); notice(v19FmtErr(err)); }
+      }, 'criteria-signoff:' + team.id);
+      signBtn.dataset.action = 'criteria-signoff';
+      const sAct = node('div', undefined, 'actions'); sAct.append(signBtn);
+      critSec.append(sGrid, sAct);
+    }
+    card.append(critSec);
+
+    const candSec = node('div', undefined, 'v19-subpanel');
+    candSec.append(node('h4', '2. 冻结候选切换与绑定批准（切换候选自动清空旧批准）'));
+    if (!cands.length) {
+      candSec.append(node('p', '尚无冻结候选。请至少验收 1 个任务后点击上方“生成冻结候选”。', 'hint'));
+    } else {
+      const cSelWrap = node('label', undefined, 'v19-field'); cSelWrap.append(node('span', `选择冻结候选（共 ${cands.length} 个）`));
+      const candSel = document.createElement('select'); candSel.dataset.v19CandidateSelect = '1'; candSel.dataset.action = 'select-candidate';
+      cands.forEach((item, idx) => {
+        const o = document.createElement('option'); o.value = item.id;
+        o.textContent = `C${idx + 1} · ${item.id} · ${item.status}${item.assemblyMode ? ` (${item.assemblyMode})` : ''}`;
+        candSel.append(o);
+      });
+      candSel.value = selCandId;
+      candSel.addEventListener('change', () => {
+        selectedCandidateByTeam.set(team.id, candSel.value);
+        selectedApprovalByTeam.delete(team.id);
+        v19MountOverviewPanels(team, tasks);
+      });
+      cSelWrap.append(candSel); candSec.append(cSelWrap);
+      if (cand) {
+        const pills = node('div', undefined, 'v19-pills');
+        const isFailed = cand.status === 'verification_failed';
+        pills.append(node('span', isFailed ? '集成检查未通过 · 禁止批准发布' : `候选状态：${cand.status}`, 'v19-pill ' + (isFailed ? 'error' : 'good')));
+        const ev = cand.liveGoalEvaluation || cand.goalEvaluation;
+        if (ev) pills.append(node('span', ev.goalPassed ? '目标门禁：通过' : '目标门禁：未全部通过', 'v19-pill ' + (ev.goalPassed ? 'good' : 'warn')));
+        candSec.append(pills);
+        if (cand.commitOid) candSec.append(node('p', `Commit OID: ${cand.commitOid}`, 'meta'));
+
+        const revGrid = node('div', undefined, 'v19-grid');
+        const revGoalWrap = node('label', undefined, 'v19-field'); revGoalWrap.append(node('span', '修订任务说明'));
+        const revGoalIn = document.createElement('input'); revGoalIn.type = 'text'; revGoalIn.dataset.v19ReviseGoal = '1';
+        revGoalIn.value = draft.reviseGoal ?? ''; revGoalIn.placeholder = `基于 ${cand.id} 发起兼容修订`;
+        revGoalIn.addEventListener('input', () => { draft.reviseGoal = revGoalIn.value; }); revGoalWrap.append(revGoalIn);
+        const revMemWrap = node('label', undefined, 'v19-field'); revMemWrap.append(node('span', '指派修订成员'));
+        const revMemSel = document.createElement('select'); revMemSel.dataset.v19ReviseMember = '1';
+        for (const m of team.members || []) { const o = document.createElement('option'); o.value = m.id; o.textContent = `${m.name} (${m.role})`; revMemSel.append(o); }
+        if (draft.reviseMemberId) revMemSel.value = draft.reviseMemberId;
+        revMemSel.addEventListener('change', () => { draft.reviseMemberId = revMemSel.value; }); revMemWrap.append(revMemSel);
+        revGrid.append(revGoalWrap, revMemWrap);
+        const revBtn = button('基于当前候选发起集成修订', async () => {
+          try {
+            const goal = revGoalIn.value.trim() || `基于冻结候选 ${cand.id} 执行集成修订`;
+            const t = await api('/tasks', 'POST', {
+              requestId: 'ui-rev-' + Date.now() + '-' + Math.random().toString(16).slice(2, 6),
+              teamId: team.id, memberId: revMemSel.value || team.members?.[0]?.id,
+              title: '集成修订 · ' + cand.id.slice(0, 8), goal, revisionOfCandidateId: cand.id,
+            });
+            v19SetCardStatus(statusEl, `已提交基于候选 ${cand.id} 的集成修订任务 ${t.id}。`);
+            notice(`已提交集成修订任务 ${t.id}。`);
+            await refresh(true);
+          } catch (err) { v19SetCardStatus(statusEl, v19FmtErr(err), true); notice(v19FmtErr(err)); }
+        }, 'revise:' + team.id, 'quiet');
+        revBtn.dataset.action = 'revise-candidate';
+
+        const pubGrid = node('div', undefined, 'v19-grid');
+        const brWrap = node('label', undefined, 'v19-field'); brWrap.append(node('span', '目标本地分支名（不含 superagent/ 前缀）'));
+        const brIn = document.createElement('input'); brIn.type = 'text'; brIn.dataset.v19Branch = '1';
+        brIn.value = draft.branchName ?? mergeInput?.value ?? ''; brIn.placeholder = '留空按默认分支名';
+        brIn.addEventListener('input', () => { draft.branchName = brIn.value; if (mergeInput) mergeInput.value = brIn.value; }); brWrap.append(brIn);
+        const allApps = Array.isArray(team.approvals) ? team.approvals : [];
+        const validApps = allApps.filter(a => a.candidateId === cand.id && !a.revokedAt);
+        let selAppId = selectedApprovalByTeam.get(team.id) || '';
+        if (!validApps.some(a => a.id === selAppId)) { selAppId = ''; selectedApprovalByTeam.delete(team.id); }
+        const appWrap = node('label', undefined, 'v19-field'); appWrap.append(node('span', `当前候选绑定批准（仅显示属于 ${cand.id} 的有效批准）`));
+        const appSel = document.createElement('select'); appSel.dataset.v19ApprovalSelect = '1';
+        const emptyOpt = document.createElement('option'); emptyOpt.value = ''; emptyOpt.textContent = validApps.length ? '选择一条有效批准…' : '无绑定批准（需点击“批准当前候选”）';
+        appSel.append(emptyOpt);
+        for (const a of validApps) {
+          const o = document.createElement('option'); o.value = a.id;
+          o.textContent = `${a.id.slice(0, 8)} · ${a.purpose} -> ${a.targetRef}`;
+          appSel.append(o);
+        }
+        appSel.value = selAppId;
+        appSel.addEventListener('change', () => { if (appSel.value) selectedApprovalByTeam.set(team.id, appSel.value); else selectedApprovalByTeam.delete(team.id); });
+        appWrap.append(appSel); pubGrid.append(brWrap, appWrap);
+
+        const appBtn = button('批准当前候选', async () => {
+          try {
+            const bName = (brIn.value || mergeInput?.value || '').trim();
+            const app = await api('/teams/' + encodeURIComponent(team.id) + '/candidates/' + encodeURIComponent(cand.id) + '/approve', 'POST', {
+              purpose: 'local_publish', ...(bName ? { branchName: bName } : {}), actor: 'dashboard:maintainer',
+            });
+            selectedApprovalByTeam.set(team.id, app.id);
+            v19SetCardStatus(statusEl, `已为候选 ${cand.id} 记录绑定批准 ${app.id}。`);
+            notice(`已批准候选 ${cand.id}（${app.id}）。`);
+            await refresh(true);
+          } catch (err) { v19SetCardStatus(statusEl, v19FmtErr(err), true); notice(v19FmtErr(err)); }
+        }, 'approve:' + team.id);
+        appBtn.dataset.action = 'approve-candidate';
+
+        const revokeBtn = button('撤销选定批准', async () => {
+          try {
+            const aid = appSel.value || selectedApprovalByTeam.get(team.id) || '';
+            if (!aid) throw new Error('请先选择一条有效批准记录后再撤销');
+            await api('/teams/' + encodeURIComponent(team.id) + '/approvals/' + encodeURIComponent(aid) + '/revoke', 'POST', { reason: 'ui-manual-revoke' });
+            selectedApprovalByTeam.delete(team.id);
+            v19SetCardStatus(statusEl, `已撤销批准 ${aid}。`);
+            notice(`已撤销批准 ${aid}。`);
+            await refresh(true);
+          } catch (err) { v19SetCardStatus(statusEl, v19FmtErr(err), true); notice(v19FmtErr(err)); }
+        }, 'revoke:' + team.id, 'quiet');
+        revokeBtn.dataset.action = 'revoke-approval';
+
+        const pubBtn = button('使用选定批准发布本地分支', async () => {
+          try {
+            const aid = appSel.value || selectedApprovalByTeam.get(team.id) || '';
+            if (!aid) throw new Error('当前候选尚无选定有效批准（切换候选后旧批准已自动清空），请先点击“批准当前候选”。');
+            const bName = (brIn.value || mergeInput?.value || '').trim();
+            const pub = await api('/teams/' + encodeURIComponent(team.id) + '/candidates/' + encodeURIComponent(cand.id) + '/publish-local', 'POST', {
+              approvalId: aid, ...(bName ? { branchName: bName } : {}),
+            });
+            v19SetCardStatus(statusEl, pub.note || `已按批准 ${aid} 发布本地分支 ${pub.branch}。`);
+            notice(pub.note || `已发布本地分支 ${pub.branch}。`);
+            await refresh(true);
+          } catch (err) { v19SetCardStatus(statusEl, v19FmtErr(err), true); notice(v19FmtErr(err)); }
+        }, 'pub-sel:' + team.id, 'primary-good');
+        pubBtn.dataset.action = 'publish-with-approval';
+
+        const cAct = node('div', undefined, 'actions'); cAct.append(revBtn, appBtn, revokeBtn, pubBtn);
+        candSec.append(revGrid, pubGrid, cAct);
+      }
+    }
+    card.append(candSec);
+
+    const prSec = node('div', undefined, 'v19-subpanel');
+    prSec.append(node('h4', '3. 只读 PR 对账（三层分离事实）与远端交付意图'));
+    const prLinks = Array.isArray(team.prLinks) ? team.prLinks : [];
+    const prGrid = node('div', undefined, 'v19-grid');
+    const prRepoWrap = node('label', undefined, 'v19-field'); prRepoWrap.append(node('span', 'GitHub 仓库 (owner/repo)'));
+    const prRepoIn = document.createElement('input'); prRepoIn.type = 'text'; prRepoIn.dataset.v19PrRepo = '1';
+    prRepoIn.value = draft.prRepo ?? prLinks.at(-1)?.repo ?? ''; prRepoIn.placeholder = 'owner/repo';
+    prRepoIn.addEventListener('input', () => { draft.prRepo = prRepoIn.value; }); prRepoWrap.append(prRepoIn);
+    const prNumWrap = node('label', undefined, 'v19-field'); prNumWrap.append(node('span', 'PR 编号'));
+    const prNumIn = document.createElement('input'); prNumIn.type = 'number'; prNumIn.min = '1'; prNumIn.dataset.v19PrNumber = '1';
+    prNumIn.value = draft.prNumber ?? (prLinks.at(-1)?.prNumber ? String(prLinks.at(-1).prNumber) : ''); prNumIn.placeholder = '42';
+    prNumIn.addEventListener('input', () => { draft.prNumber = prNumIn.value; }); prNumWrap.append(prNumIn);
+    prGrid.append(prRepoWrap, prNumWrap);
+    const prBtn = button('只读 PR 对账', async () => {
+      try {
+        const repo = prRepoIn.value.trim(); const num = Number(prNumIn.value);
+        if (!repo || !Number.isInteger(num) || num < 1) throw new Error('请填写合法的 owner/repo 与 PR 编号');
+        const res = await api('/teams/' + encodeURIComponent(team.id) + '/pr/reconcile', 'POST', {
+          repo, prNumber: num, ...(cand ? { candidateId: cand.id } : {}),
+        });
+        prReconcileByTeam.set(team.id, res);
+        v19SetCardStatus(statusEl, `已完成 PR #${num} 只读对账（writeRequestsMade=${res.observation?.writeRequestsMade ?? 0}）。`);
+        notice(`PR #${num} 只读对账完成。`);
+        await refresh(true);
+      } catch (err) { v19SetCardStatus(statusEl, v19FmtErr(err), true); notice(v19FmtErr(err)); }
+    }, 'pr-rec:' + team.id);
+    prBtn.dataset.action = 'pr-reconcile';
+    const prAct = node('div', undefined, 'actions'); prAct.append(prBtn); prSec.append(prGrid, prAct);
+
+    const latestObs = prReconcileByTeam.get(team.id)?.observation || prLinks.at(-1)?.lastObservation || null;
+    const confirmedPublish = (Array.isArray(team.publishIntents) ? team.publishIntents : []).some(i => i.status === 'confirmed' || i.receipt?.branch);
+    if (latestObs || prLinks.length) {
+      const pills = node('div', undefined, 'v19-pills'); pills.dataset.v19PrPills = '1';
+      const localIntegrated = Boolean(team.lastMerge?.branch || confirmedPublish || latestObs?.localFacts?.publishedLocally);
+      pills.append(node('span', localIntegrated ? `1. 本地集成发布：已发布本地分支${team.lastMerge?.branch ? ` (${team.lastMerge.branch})` : ''}` : '1. 本地集成发布：尚未发布', 'v19-pill ' + (localIntegrated ? 'good' : 'warn')));
+      if (latestObs) {
+        const rMerged = Boolean(latestObs.remoteMerged);
+        pills.append(node('span', `2. 远端 PR：${rMerged ? '已合入' : '未合入'}${latestObs.versionMismatch ? ' (存在版本差异)' : ''}`, 'v19-pill ' + (latestObs.versionMismatch ? 'warn' : (rMerged ? 'good' : ''))));
+        const gOk = Boolean(latestObs.localFacts?.effectiveGoalPassed);
+        pills.append(node('span', `3. 本地目标同步：${gOk ? '本地已通过' : '本地未通过'}${rMerged && !gOk ? '（远端已合入但本地未变绿）' : ''}`, 'v19-pill ' + (gOk ? 'good' : 'error')));
+      } else if (prLinks.at(-1)) {
+        const lk = prLinks.at(-1);
+        pills.append(node('span', `2. 远端 PR #${lk.prNumber}：${lk.lastState || lk.status || 'unknown'}`, 'v19-pill'));
+      }
+      prSec.append(pills);
+    }
+
+    const streams = (Array.isArray(team.deliveryStreams) ? team.deliveryStreams : []).filter(s => s.state === 'frozen_external_drift');
+    for (const st of streams) {
+      const item = node('div', undefined, 'v19-item');
+      item.append(node('p', `交付流 ${st.id} 因外部漂移已冻结：${st.frozenReason || st.actualRemoteHead}`, 'error'));
+      const nb = document.createElement('input'); nb.type = 'text'; nb.placeholder = '重定向到新分支名（留空则接纳当前远端头）'; nb.dataset.v19DriftBranch = '1';
+      const rb = button('解决外部漂移', async () => {
+        try {
+          await api('/teams/' + encodeURIComponent(team.id) + '/remote/drift/resolve', 'POST', {
+            deliveryStreamId: st.id, action: nb.value.trim() ? 'redirect_new_branch' : 'adopt_as_candidate', ...(nb.value.trim() ? { newBranch: nb.value.trim() } : {}),
+          });
+          notice(`已解决交付流 ${st.id} 的外部漂移冻结。`); await refresh(true);
+        } catch (err) { v19SetCardStatus(statusEl, v19FmtErr(err), true); notice(v19FmtErr(err)); }
+      }, 'drift-res:' + st.id);
+      rb.dataset.action = 'resolve-drift'; item.append(nb, rb); prSec.append(item);
+    }
+
+    const unknownPrs = (Array.isArray(team.prCreateIntents) ? team.prCreateIntents : []).filter(i => i.status === 'receipt_unknown' || i.status === 'unknown');
+    for (const u of unknownPrs) {
+      const item = node('div', undefined, 'v19-item');
+      item.append(node('p', `PR 建单回执未明（${u.id} · ${u.status}）：绝不自动重试创建，需只读核实或人工处置。`, 'warn'));
+      const pIn = document.createElement('input'); pIn.type = 'number'; pIn.min = '1'; pIn.placeholder = '已知 PR 编号'; pIn.dataset.v19UnknownPr = '1';
+      const bBind = button('人工绑定 PR', async () => {
+        try {
+          await api('/teams/' + encodeURIComponent(team.id) + '/remote/unknown/resolve', 'POST', { intentId: u.id, action: 'bind_existing', prNumber: Number(pIn.value) });
+          notice(`已人工绑定 PR 意图 ${u.id}。`); await refresh(true);
+        } catch (err) { v19SetCardStatus(statusEl, v19FmtErr(err), true); notice(v19FmtErr(err)); }
+      }, 'unk-bind:' + u.id);
+      const bAb = button('作废此意图', async () => {
+        try {
+          await api('/teams/' + encodeURIComponent(team.id) + '/remote/unknown/resolve', 'POST', { intentId: u.id, action: 'abandon' });
+          notice(`已作废未知 PR 意图 ${u.id}。`); await refresh(true);
+        } catch (err) { v19SetCardStatus(statusEl, v19FmtErr(err), true); notice(v19FmtErr(err)); }
+      }, 'unk-ab:' + u.id, 'quiet');
+      bBind.dataset.action = 'resolve-unknown-bind'; bAb.dataset.action = 'resolve-unknown-abandon';
+      item.append(pIn, bBind, bAb); prSec.append(item);
+    }
+    card.append(prSec, statusEl); ov.append(card);
+  }
+  function v19BindGlobalUI() {
+    const probeBtn = $('probe-repo-btn');
+    if (probeBtn && !probeBtn.dataset.v19Bound) {
+      probeBtn.dataset.v19Bound = '1';
+      probeBtn.addEventListener('click', async () => {
+        const out = $('repo-probe-result'); const rp = $('team-repo-path')?.value?.trim();
+        if (!out) return; out.hidden = false;
+        if (!rp) { out.textContent = '请先填写 Git 仓库根目录绝对路径。'; out.className = 'error'; return; }
+        out.textContent = '正在只读探测仓库锁文件与候选测试命令…'; out.className = 'hint';
+        try {
+          const res = await api('/repo/probe', 'POST', { repoPath: rp });
+          out.className = 'hint';
+          const cmds = (res.candidateCommands || []).map(c => `${c.command} ${(c.args || []).join(' ')}`).join(' | ');
+          out.textContent = `生态：${(res.ecosystems || []).join(', ') || '未识别'}；锁文件：${(res.lockfiles || []).map(l => l.file).join(', ') || '无'}；候选命令（autoSelected=${res.autoSelected}）：${cmds || '未检测到'}。`;
+        } catch (err) { out.className = 'error'; out.textContent = v19FmtErr(err); }
+      });
+    }
+    const teamForm = $('team-form');
+    if (teamForm && !teamForm.dataset.v19Bound) {
+      teamForm.dataset.v19Bound = '1';
+      teamForm.addEventListener('submit', () => {
+        const nameVal = teamForm.querySelector('input[name="name"]')?.value?.trim();
+        const tVal = Number($('team-soft-token')?.value); const dVal = Number($('team-max-duration')?.value); const aVal = Number($('team-max-attempts')?.value);
+        const b = {};
+        if (Number.isInteger(tVal) && tVal >= 1) b.maxTeamTokensSoft = tVal;
+        if (Number.isFinite(dVal) && dVal >= 1) b.maxTaskDurationMs = Math.round(dVal * 1000);
+        if (Number.isInteger(aVal) && aVal >= 1) b.maxTeamAttempts = aVal;
+        pendingCreateBudget = nameVal && Object.keys(b).length ? { teamName: nameVal, budget: b } : null;
+      }, { capture: true });
+    }
+    const ov = $('overview');
+    if (ov && !ov.dataset.v19ObsBound && typeof MutationObserver !== 'undefined') {
+      ov.dataset.v19ObsBound = '1';
+      new MutationObserver(() => {
+        if (!currentTeam || currentTeam.id !== selectedTeam) return;
+        if (pendingCreateBudget && currentTeam.name === pendingCreateBudget.teamName) v19ApplyPendingBudget(currentTeam);
+        if (currentTeam.workspaceMode !== 'git-worktree' && !ov.querySelector('[data-v19-panel="governance"]')) ov.append(v19BuildGovernanceCard(currentTeam));
+      }).observe(ov, { childList: true });
+    }
+  }
+  queueMicrotask(v19BindGlobalUI);
 
   function node(tag, text, className) {
     const e = document.createElement(tag);
@@ -703,6 +1191,7 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
             button('检查目标基线漂移', () => checkBaseDrift(team.id, latestCand.id), 'merge:' + team.id, 'quiet'),
           );
         }
+        queueMicrotask(() => v19MountOverviewPanels(team, tasks));
         mergePanel.append(branchLabel, mergeActions);
         box.append(mergePanel);
       }

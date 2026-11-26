@@ -12,9 +12,9 @@
 
 | 组件 | 包名与版本 | 核心职责 |
 | --- | --- | --- |
-| **SuperAgent 协作与交付** | `@local/dsh-superagent-menu` (`1.23.0-dsh.1`) | 对外统一为 **SuperAgent** 产品执行协议：目标拆解、原话必达门禁（R2）、证据选路、多语言行为测试与 Git Worktree 集成方法论；内置 3 套技能与聊天「＋」入口 |
-| **Super Teams 审阅工作台与共享内核** | `@local/dsh-super-teams` (`0.15.0-dsh.1`) | 搭载与 Codex 字节级锁定的共享内核 `engine-core 0.18.0`（Engine `0.18.0-dsh.1`）：单调度所有者、不可变冻结交付候选与绑定批准、增量集成修订、基线漂移三方试合、只读 GitHub PR 对账与会话隔离右侧审阅工作台 |
-| **AI 智能体专用安装 Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.2.0`) | 供其他 AI 智能体自动完成全平台检测、备份、单入口自包含安装与逐文件 SHA-256 校验 |
+| **SuperAgent 协作与交付** | `@local/dsh-superagent-menu` (`1.24.0-dsh.1`) | 对外统一为 **SuperAgent** 产品执行协议：目标拆解、原话必达门禁（R2）、证据选路、多语言行为测试与 Git Worktree 集成方法论；内置 3 套技能与聊天「＋」入口 |
+| **Super Teams 审阅工作台与共享内核** | `@local/dsh-super-teams` (`0.16.0-dsh.1`) | 搭载与 Codex 字节级锁定的共享内核 `engine-core 0.19.0`（Engine `0.19.0-dsh.1`）：安全环境隔离与进程树强杀、事务型预算熔断、不可变冻结候选与防误批切换、`--force-with-lease` 远端交付门禁、环境配方与只读 GitHub PR 对账 |
+| **AI 智能体专用安装 Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.3.0`) | 供其他 AI 智能体自动完成全平台检测、备份、单入口自包含安装与逐文件 SHA-256 校验 |
 
 ---
 
@@ -88,8 +88,8 @@ node ./scripts/install.mjs --verify
 # 干净卸载插件与 4 套技能（默认保留整个 plugin-data/dsh-super-teams/ 历史数据目录；加 --purge-data 连同数据一并清理）
 node ./scripts/install.mjs --uninstall
 
-# 运行单元、跨重启对账、行为门禁、Git Worktree 与多语言测试回归套件（需 Node >=22.13）
-node --test ./tests/dsh-runtime.test.mjs ./tests/board.test.mjs ./tests/v0170-worktree-polyglot.test.mjs
+# 运行单元、跨重启对账、安全隔离、预算熔断、远端交付与跨宿主重放全套回归测试（需 Node >=22.13）
+npm test
 ```
 
 > **完整备份警告（切勿只复制 `engine.sqlite`）**：`engine.sqlite` 仅保存团队与任务元数据及哈希索引；真实已验收交付快照、Git 补丁、登记来源与任务工作区分别存放在同目录的 `artifact-snapshots/`、`git-patches/`、`context/` 与 `attempts/` 中。备份或迁移数据时，请先退出 DeepSeek Harness，再**完整复制整个 `~/.dsh/profiles/<profile>/plugin-data/dsh-super-teams/` 目录**（包含 `engine.sqlite` 及 `-wal`/`-shm` 与全部子目录），仅复制单个 SQLite 文件会丢失所有交付文件。

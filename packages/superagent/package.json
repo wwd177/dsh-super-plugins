@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-superagent-menu",
-  "version": "1.23.0-dsh.1",
+  "version": "1.24.0-dsh.1",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -35,6 +35,6 @@
   },
   "meta": {
     "title": "SuperAgent 协作与交付",
-    "description": "SuperAgent 协作与交付（1.23.0-dsh.1）；统一执行协议与目标验收方法论，与内置 Super Teams 审阅工作台共用 v0.18 共享候选内核与单一调度所有者。"
+    "description": "SuperAgent 协作与交付（1.24.0-dsh.1）；统一执行协议与目标验收方法论，与内置 Super Teams 审阅工作台共用 v0.19 安全隔离/预算熔断/远端交付共享候选内核与单一调度所有者。"
   }
 }

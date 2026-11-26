@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Super Teams",
-    "description": "SuperAgent shared persistent engine (0.18.0-dsh.1): frozen goal criteria gate, immutable delivery candidates & bound approvals, incremental integration revisions, read-only GitHub PR reconciliation, and session-isolated review workbench."
+    "description": "SuperAgent shared persistent engine (0.19.0-dsh.1): isolated verification & process-tree cleanup, transactional budget guards, frozen goal criteria, immutable delivery candidates, lease-checked remote delivery, and read-only PR reconciliation workbench."
   }
 }

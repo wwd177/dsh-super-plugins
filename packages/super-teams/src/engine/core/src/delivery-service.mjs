@@ -29,11 +29,14 @@ import {
   createGhReadOnlyTransport,
   reconcileGitHubPrReadOnly,
 } from './github-readonly.mjs';
+import { probeHostIsolationPosture } from './process-isolation.mjs';
+import { RemoteDeliveryService } from './remote-delivery.mjs';
+import { probeRepoEnvironment, approveEnvRecipe, WorktreeEnvManager } from './env-recipe.mjs';
 
 const now = () => new Date().toISOString();
 
 /**
- * 共享交付候选、目标门禁、本地原子发布与只读 GitHub PR 对账服务（v0.18 R1-R8）。
+ * 共享交付候选、目标门禁、本地原子发布、只读 PR 对账及 v0.19 远端授权交付服务。
  * 由 Codex Engine 与 DeepSeek Harness Engine 共同持有同一锁定版本，保证双宿主行为严格一致。
  */
 export class DeliveryService {
@@ -42,15 +45,29 @@ export class DeliveryService {
     runStandaloneCheck,
     validateCheck,
     isBehavioralCheck,
+    allowedRepos = null,
+    publisherIdentity = 'isolated-publisher',
   }) {
     this.engine = engine;
     this.runStandaloneCheck = runStandaloneCheck;
     this.validateCheck = validateCheck;
     this.isBehavioralCheck = isBehavioralCheck;
+    this.remote = new RemoteDeliveryService({
+      store: engine?.store,
+      engine,
+      allowedRepos,
+      publisherIdentity,
+    });
+    this.envManager = new WorktreeEnvManager();
   }
 
   get store() { return this.engine.store; }
   get dataDir() { return this.engine.dataDir; }
+
+  _ensureRemoteStore() {
+    this.remote.store = this.store;
+    return this.remote;
+  }
 
   _team(teamId) {
     return this.engine._team(teamId);
@@ -303,10 +320,14 @@ export class DeliveryService {
       signoffs,
     });
 
+    const hasFailedCheck = assembled.integrationCheck?.passed === false
+      || selectedTasks.some(t => t.verification?.passed === false && !t.acceptance?.acknowledgeHostFailure);
     const candidate = {
       ...candidateDraft,
       goalEvaluation,
-      status: goalEvaluation.goalPassed ? 'goal_verified' : 'ready_for_review',
+      status: hasFailedCheck
+        ? 'verification_failed'
+        : (goalEvaluation.goalPassed ? 'goal_verified' : 'ready_for_review'),
     };
 
     this.store.saveCandidate(candidate);
@@ -363,48 +384,65 @@ export class DeliveryService {
     targetRef = null,
     actor = 'user',
     note = null,
+    requireGoalPassed = false,
   } = {}) {
-    const team = this._team(teamId);
-    const candidate = this.store.candidate(candidateId);
-    if (!candidate || candidate.teamId !== team.id) {
-      throw new Error(`Candidate not found in team: ${candidateId}`);
-    }
-    const frozenCriteria = this.store.latestGoalCriteria(team.id);
-    if (frozenCriteria && candidate.gateHash && frozenCriteria.gateHash !== candidate.gateHash) {
-      throw Object.assign(
-        new Error('Goal criteria gate changed after this candidate was built; create a new candidate before approving'),
-        { code: 'CANDIDATE_GATE_STALE' },
-      );
-    }
-    let resolvedTargetRef = targetRef ? String(targetRef).trim() : null;
-    if (purpose === 'local_publish') {
-      const sanitized = sanitizeSuperagentBranch(branchName ?? (resolvedTargetRef || null), team.id);
-      resolvedTargetRef = sanitized.ref;
-    } else if (!resolvedTargetRef) {
-      resolvedTargetRef = candidate.targetRef;
-    }
+    return this.store.transaction(() => {
+      const team = this._team(teamId);
+      const candidate = this.store.candidate(candidateId);
+      if (!candidate || candidate.teamId !== team.id) {
+        throw new Error(`Candidate not found in team: ${candidateId}`);
+      }
+      if (candidate.status === 'verification_failed' || candidate.integrationCheck?.passed === false) {
+        throw Object.assign(
+          new Error(`Candidate ${candidate.id} failed verification checks and cannot be approved for publishing`),
+          { code: 'CANDIDATE_VERIFICATION_FAILED' },
+        );
+      }
+      const frozenCriteria = this.store.latestGoalCriteria(team.id);
+      if (frozenCriteria && candidate.gateHash && frozenCriteria.gateHash !== candidate.gateHash) {
+        throw Object.assign(
+          new Error('Goal criteria gate changed after this candidate was built; create a new candidate before approving'),
+          { code: 'CANDIDATE_GATE_STALE' },
+        );
+      }
+      if (requireGoalPassed && !candidate.goalEvaluation?.goalPassed) {
+        throw Object.assign(
+          new Error(`Candidate ${candidate.id} has unsatisfied mandatory goal criteria and cannot be approved`),
+          { code: 'GOAL_CRITERIA_NOT_MET' },
+        );
+      }
+      let resolvedTargetRef = targetRef ? String(targetRef).trim() : null;
+      if (purpose === 'local_publish') {
+        const sanitized = sanitizeSuperagentBranch(branchName ?? (resolvedTargetRef || null), team.id);
+        resolvedTargetRef = sanitized.ref;
+      } else if (!resolvedTargetRef) {
+        resolvedTargetRef = candidate.targetRef;
+      }
 
-    const approval = createApprovalRecord({
-      candidate,
-      purpose,
-      targetRef: resolvedTargetRef,
-      actor,
-      note,
+      const approval = createApprovalRecord({
+        candidate,
+        purpose,
+        targetRef: resolvedTargetRef,
+        actor,
+        note,
+      });
+      this.store.saveCandidateApproval(approval);
+      return approval;
     });
-    this.store.saveCandidateApproval(approval);
-    return approval;
   }
 
   revokeApproval(teamId, { approvalId, reason = 'revoked by reviewer' } = {}) {
-    const team = this._team(teamId);
-    const approval = this.store.candidateApproval(approvalId);
-    if (!approval || approval.teamId !== team.id) throw new Error(`Approval not found: ${approvalId}`);
-    if (!approval.revokedAt) {
-      approval.revokedAt = now();
-      approval.revokeReason = String(reason || 'revoked').slice(0, 500);
-      this.store.saveCandidateApproval(approval);
-    }
-    return approval;
+    return this.store.transaction(() => {
+      const team = this._team(teamId);
+      const approval = this.store.candidateApproval(approvalId);
+      if (!approval || approval.teamId !== team.id) throw new Error(`Approval not found: ${approvalId}`);
+      if (!approval.revokedAt) {
+        approval.revokedAt = now();
+        approval.revokeReason = String(reason || 'revoked').slice(0, 500);
+        this.store.saveCandidateApproval(approval);
+      }
+      return approval;
+    });
   }
 
   // ==================== R4：仅用冻结提交执行原子本地发布与崩溃恢复 ====================
@@ -416,55 +454,64 @@ export class DeliveryService {
     expectedOldOid = ZERO_OID,
     _testCrashAfterGitUpdateRef = false,
   } = {}) {
-    const team = this._team(teamId);
-    const candidate = this.store.candidate(candidateId);
-    if (!candidate || candidate.teamId !== team.id) {
-      throw new Error(`Candidate not found in team: ${candidateId}`);
-    }
-    const approval = this.store.candidateApproval(approvalId);
-    const targetRef = branchName
-      ? sanitizeSuperagentBranch(branchName, team.id).ref
-      : approval?.targetRef;
-    if (!targetRef) {
-      throw new Error('targetRef or branchName is required for local publish');
-    }
+    const prepared = this.store.transaction(() => {
+      const team = this._team(teamId);
+      const candidate = this.store.candidate(candidateId);
+      if (!candidate || candidate.teamId !== team.id) {
+        throw new Error(`Candidate not found in team: ${candidateId}`);
+      }
+      if (candidate.status === 'verification_failed' || candidate.integrationCheck?.passed === false) {
+        throw Object.assign(
+          new Error(`Candidate ${candidate.id} failed verification checks and cannot be published`),
+          { code: 'CANDIDATE_VERIFICATION_FAILED' },
+        );
+      }
+      const approval = this.store.candidateApproval(approvalId);
+      const targetRef = branchName
+        ? sanitizeSuperagentBranch(branchName, team.id).ref
+        : approval?.targetRef;
+      if (!targetRef) {
+        throw new Error('targetRef or branchName is required for local publish');
+      }
 
-    const frozenCriteria = this.store.latestGoalCriteria(team.id);
-    assertApprovalValid({
-      approval,
-      candidate,
-      purpose: 'local_publish',
-      targetRef,
-      currentCriteriaRevision: frozenCriteria?.revision ?? null,
-      currentGateHash: frozenCriteria?.gateHash ?? null,
+      const frozenCriteria = this.store.latestGoalCriteria(team.id);
+      assertApprovalValid({
+        approval,
+        candidate,
+        purpose: 'local_publish',
+        targetRef,
+        currentCriteriaRevision: frozenCriteria?.revision ?? null,
+        currentGateHash: frozenCriteria?.gateHash ?? null,
+      });
+
+      const existingPending = this.store.teamPublishIntents(team.id)
+        .find(i => i.targetRef === targetRef && i.status === 'pending_git');
+      if (existingPending) {
+        throw Object.assign(
+          new Error(`Target ref ${targetRef} already has an unresolved publish intent (${existingPending.id}); run reconcile first`),
+          { code: 'PUBLISH_INTENT_IN_FLIGHT', intentId: existingPending.id },
+        );
+      }
+
+      const intent = {
+        id: `pub-${randomUUID().slice(0, 12)}`,
+        teamId: team.id,
+        candidateId: candidate.id,
+        approvalId: approval.id,
+        repoPath: candidate.repoPath,
+        targetRef,
+        branch: targetRef.slice('refs/heads/'.length),
+        expectedOldOid: expectedOldOid || ZERO_OID,
+        targetOid: candidate.commitOid,
+        status: 'pending_git',
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      this.store.savePublishIntent(intent);
+      return { team, candidate, targetRef, intent };
     });
 
-    // R4：先持久化本地发布意图（用于崩溃后按 intentId + 实际 OID 精确恢复）
-    const existingPending = this.store.teamPublishIntents(team.id)
-      .find(i => i.targetRef === targetRef && i.status === 'pending_git');
-    if (existingPending) {
-      throw Object.assign(
-        new Error(`Target ref ${targetRef} already has an unresolved publish intent (${existingPending.id}); run reconcile first`),
-        { code: 'PUBLISH_INTENT_IN_FLIGHT', intentId: existingPending.id },
-      );
-    }
-
-    const intent = {
-      id: `pub-${randomUUID().slice(0, 12)}`,
-      teamId: team.id,
-      candidateId: candidate.id,
-      approvalId: approval.id,
-      repoPath: candidate.repoPath,
-      targetRef,
-      branch: targetRef.slice('refs/heads/'.length),
-      expectedOldOid: expectedOldOid || ZERO_OID,
-      targetOid: candidate.commitOid,
-      status: 'pending_git',
-      createdAt: now(),
-      updatedAt: now(),
-    };
-    this.store.savePublishIntent(intent);
-
+    const { team, candidate, targetRef, intent } = prepared;
     let published;
     try {
       published = await publishFrozenCandidateRef({
@@ -673,5 +720,57 @@ export class DeliveryService {
     };
     this.store.savePrLink(savedLink);
     return { link: savedLink, observation };
+  }
+
+  // ==================== v0.19 远端授权写入 / v0.20 环境配方 / 安全姿态 ====================
+
+  setAllowedRepos(repos = []) {
+    this.remote.defaultAllowedRepos = Array.isArray(repos) ? repos.map(r => String(r).toLowerCase()) : null;
+  }
+
+  pushCandidateRemote(teamId, opts) {
+    return this._ensureRemoteStore().pushCandidateRemote(teamId, opts);
+  }
+
+  createPullRequestIdempotent(teamId, opts) {
+    return this._ensureRemoteStore().createPullRequestIdempotent(teamId, opts);
+  }
+
+  reconcileRemoteIntents(teamId, opts) {
+    return this._ensureRemoteStore().reconcileRemoteIntents(teamId, opts);
+  }
+
+  resolveUnknownPrIntent(teamId, opts) {
+    return this._ensureRemoteStore().resolveUnknownPrIntent(teamId, opts);
+  }
+
+  ingestRemoteFailureEvent(teamId, opts) {
+    return this._ensureRemoteStore().ingestRemoteFailureEvent(teamId, opts);
+  }
+
+  resolveExternalDrift(teamId, opts) {
+    return this._ensureRemoteStore().resolveExternalDrift(teamId, opts);
+  }
+
+  probeRepoEnvironment(repoPath) {
+    return probeRepoEnvironment(repoPath);
+  }
+
+  approveEnvRecipe(teamId, opts) {
+    this._team(teamId);
+    return approveEnvRecipe(this.store, teamId, opts);
+  }
+
+  listEnvRecipes(teamId) {
+    this._team(teamId);
+    return this.store.teamEnvRecipes(teamId);
+  }
+
+  getIsolationPosture() {
+    return probeHostIsolationPosture();
+  }
+
+  async close() {
+    await this.envManager.closeAll();
   }
 }

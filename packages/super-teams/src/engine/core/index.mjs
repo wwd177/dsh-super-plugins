@@ -4,3 +4,8 @@ export * from './src/delivery-candidate.mjs';
 export * from './src/github-readonly.mjs';
 export * from './src/git-worktree.mjs';
 export * from './src/delivery-service.mjs';
+export * from './src/process-isolation.mjs';
+export * from './src/budget-guard.mjs';
+export * from './src/remote-delivery.mjs';
+export * from './src/env-recipe.mjs';
+export * from './src/bench-harness.mjs';

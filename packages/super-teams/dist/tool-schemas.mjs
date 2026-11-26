@@ -4,7 +4,6 @@ var __export = (target, all) => {
     __defProp(target, name, { get: all[name], enumerable: true });
 };
 
-// node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES,
@@ -762,7 +761,6 @@ function own(inst, key, value, enumerable = true) {
 function hide(inst, key, value) {
   return own(inst, key, value, false);
 }
-// @__NO_SIDE_EFFECTS__
 function derived(computes, table) {
   for (const key in computes) {
     const compute = computes[key];
@@ -860,7 +858,6 @@ function constantCatch(value) {
   return fn;
 }
 
-// node_modules/zod/v4/core/core.js
 var _a;
 var _zodDesc = { value: void 0, enumerable: false };
 var _E = "captureStackTrace" in Error ? Error : null;
@@ -884,7 +881,6 @@ function newError(Definition) {
   }
   return new Definition();
 }
-// @__NO_SIDE_EFFECTS__
 function $constructor(name, initializer3, proto, params) {
   const zodProto = {};
   function Internals(def) {
@@ -978,7 +974,6 @@ function config(newConfig) {
   return globalConfig;
 }
 
-// node_modules/zod/v4/core/errors.js
 function _getMessage() {
   const internals = this._zod;
   internals.message ?? (internals.message = JSON.stringify(internals.def, jsonStringifyReplacer, 2));
@@ -1093,7 +1088,6 @@ function formatError(error2, mapper = (issue2) => issue2.message) {
   return fieldErrors;
 }
 
-// node_modules/zod/v4/core/parse.js
 function finalizeParams(callee, params) {
   return { callee: params?.callee ?? callee, Err: params?.Err };
 }
@@ -1241,7 +1235,6 @@ var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
   return _safeParseAsync(_Err)(schema, value, _ctx);
 };
 
-// node_modules/zod/v4/core/regexes.js
 var cuid = /^[cC][0-9a-z]{6,}$/;
 var cuid2 = /^[0-9a-z]+$/;
 var ulid = /^[0-7][0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{25}$/;
@@ -1299,7 +1292,6 @@ var boolean = /^(?:true|false)$/i;
 var lowercase = /^[^A-Z]*$/;
 var uppercase = /^[^a-z]*$/;
 
-// node_modules/zod/v4/core/checks.js
 var $ZodCheck = /* @__PURE__ */ $constructor("$ZodCheck", (inst, def) => {
   var _a3;
   inst._zod ?? (inst._zod = {});
@@ -1619,7 +1611,6 @@ var $ZodCheckOverwrite = /* @__PURE__ */ $constructor("$ZodCheckOverwrite", (ins
   };
 });
 
-// node_modules/zod/v4/core/doc.js
 var Doc = class {
   constructor(args = [], closed = {}) {
     this.content = [];
@@ -1660,14 +1651,12 @@ ${content.join("\n")}
   }
 };
 
-// node_modules/zod/v4/core/versions.js
 var version = {
   major: 4,
   minor: 6,
   patch: 7
 };
 
-// node_modules/zod/v4/core/schemas.js
 var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
   var _a3;
   inst ?? (inst = {});
@@ -2774,6 +2763,161 @@ function handleIntersectionResults(result, left, right) {
   result.value = merged.data;
   return result;
 }
+var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
+  $ZodType.init(inst, def);
+  const memo2 = globalConfig.memoizer;
+  memo2?.attach(inst);
+  inst._zod.parse = (payload, ctx) => {
+    const input = payload.value;
+    if (!isPlainObject(input)) {
+      payload.issues.push({
+        expected: "record",
+        code: "invalid_type",
+        input,
+        inst
+      });
+      return payload;
+    }
+    const proms = [];
+    const values = def.keyType._zod.values;
+    if (values && !def.partial) {
+      payload.value = memo2 ? memo2.alloc(inst, payload, {}, ctx) : {};
+      const recordKeys = /* @__PURE__ */ new Set();
+      for (const key of values) {
+        if (typeof key === "string" || typeof key === "number" || typeof key === "symbol") {
+          recordKeys.add(typeof key === "number" ? key.toString() : key);
+          if (key === "__proto__")
+            continue;
+          const keyResult = def.keyType._zod.run({ value: key, issues: [] }, ctx);
+          if (keyResult instanceof Promise) {
+            throw new Error("Async schemas not supported in object keys currently");
+          }
+          if (keyResult.issues.length) {
+            payload.issues.push({
+              code: "invalid_key",
+              origin: "record",
+              issues: keyResult.issues.map((iss) => finalizeIssue(iss, ctx, config())),
+              input: key,
+              path: [key],
+              inst
+            });
+            continue;
+          }
+          const outKey = keyResult.value;
+          if (outKey === "__proto__")
+            continue;
+          const result = def.valueType._zod.run({ value: input[key], issues: [] }, ctx);
+          if (result instanceof Promise) {
+            proms.push(result.then((result2) => {
+              if (result2.issues.length) {
+                payload.issues.push(...prefixIssues(key, result2.issues));
+              }
+              payload.value[outKey] = result2.value;
+            }));
+          } else {
+            if (result.issues.length) {
+              payload.issues.push(...prefixIssues(key, result.issues));
+            }
+            payload.value[outKey] = result.value;
+          }
+        }
+      }
+      let unrecognized;
+      for (const key in input) {
+        if (!recordKeys.has(key)) {
+          if (def.mode === "loose") {
+            if (key === "__proto__")
+              continue;
+            payload.value[key] = input[key];
+          } else {
+            unrecognized = unrecognized ?? [];
+            unrecognized.push(key);
+          }
+        }
+      }
+      if (unrecognized && unrecognized.length > 0) {
+        payload.issues.push({
+          code: "unrecognized_keys",
+          input,
+          inst,
+          keys: unrecognized,
+          continue: true
+        });
+      }
+    } else {
+      payload.value = memo2 ? memo2.alloc(inst, payload, {}, ctx) : {};
+      let unrecognized;
+      for (const key of Reflect.ownKeys(input)) {
+        if (key === "__proto__")
+          continue;
+        if (!Object.prototype.propertyIsEnumerable.call(input, key))
+          continue;
+        let keyResult = def.keyType._zod.run({ value: key, issues: [] }, ctx);
+        if (keyResult instanceof Promise) {
+          throw new Error("Async schemas not supported in object keys currently");
+        }
+        const checkNumericKey = typeof key === "string" && number.test(key) && keyResult.issues.length;
+        if (checkNumericKey) {
+          const retryResult = def.keyType._zod.run({ value: Number(key), issues: [] }, ctx);
+          if (retryResult instanceof Promise) {
+            throw new Error("Async schemas not supported in object keys currently");
+          }
+          if (retryResult.issues.length === 0) {
+            keyResult = retryResult;
+          }
+        }
+        if (keyResult.issues.length) {
+          if (def.mode === "loose") {
+            payload.value[key] = input[key];
+          } else if (values) {
+            unrecognized = unrecognized ?? [];
+            unrecognized.push(key);
+          } else {
+            payload.issues.push({
+              code: "invalid_key",
+              origin: "record",
+              issues: keyResult.issues.map((iss) => finalizeIssue(iss, ctx, config())),
+              input: key,
+              path: [key],
+              inst
+            });
+          }
+          continue;
+        }
+        const outKey = keyResult.value;
+        if (outKey === "__proto__")
+          continue;
+        const result = def.valueType._zod.run({ value: input[key], issues: [] }, ctx);
+        if (result instanceof Promise) {
+          proms.push(result.then((result2) => {
+            if (result2.issues.length) {
+              payload.issues.push(...prefixIssues(key, result2.issues));
+            }
+            payload.value[outKey] = result2.value;
+          }));
+        } else {
+          if (result.issues.length) {
+            payload.issues.push(...prefixIssues(key, result.issues));
+          }
+          payload.value[outKey] = result.value;
+        }
+      }
+      if (unrecognized && unrecognized.length > 0) {
+        payload.issues.push({
+          code: "unrecognized_keys",
+          input,
+          inst,
+          keys: unrecognized,
+          continue: true
+        });
+      }
+    }
+    if (proms.length) {
+      return Promise.all(proms).then(() => payload);
+    }
+    return payload;
+  };
+});
 var $ZodEnum = /* @__PURE__ */ $constructor("$ZodEnum", (inst, def) => {
   $ZodType.init(inst, def);
   const values = getEnumValues(def.entries);
@@ -3054,7 +3198,6 @@ function handleRefineResult(result, payload, input, inst) {
   }
 }
 
-// node_modules/zod/v4/core/memoizer.js
 var $ZodCyclicError = class extends Error {
   constructor() {
     super(`Cannot parse a reference cycle that closes through a transform`);
@@ -3328,7 +3471,6 @@ function isBackEdge(ctx, value) {
   return backEdges !== void 0 && isRef(value) && backEdges.has(value);
 }
 
-// node_modules/zod/v4/locales/en.js
 var error = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -3453,7 +3595,6 @@ function en_default() {
   };
 }
 
-// node_modules/zod/v4/core/registries.js
 var _a2;
 var $ZodRegistry = class {
   constructor() {
@@ -3501,17 +3642,14 @@ function registry() {
 (_a2 = globalThis).__zod_globalRegistry ?? (_a2.__zod_globalRegistry = registry());
 var globalRegistry = globalThis.__zod_globalRegistry;
 
-// node_modules/zod/v4/core/api.js
 function snapshotChecks(def) {
   if (def.checks)
     def.checks = [...def.checks];
   return def;
 }
-// @__NO_SIDE_EFFECTS__
 function _string(Class2, params) {
   return new Class2(snapshotChecks({ type: "string", ...normalizeParams(params) }));
 }
-// @__NO_SIDE_EFFECTS__
 function _email(Class2, params) {
   return new Class2({
     type: "string",
@@ -3521,7 +3659,6 @@ function _email(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _guid(Class2, params) {
   return new Class2({
     type: "string",
@@ -3531,7 +3668,6 @@ function _guid(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _uuid(Class2, params) {
   return new Class2({
     type: "string",
@@ -3541,7 +3677,6 @@ function _uuid(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _uuidv4(Class2, params) {
   return new Class2({
     type: "string",
@@ -3552,7 +3687,6 @@ function _uuidv4(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _uuidv6(Class2, params) {
   return new Class2({
     type: "string",
@@ -3563,7 +3697,6 @@ function _uuidv6(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _uuidv7(Class2, params) {
   return new Class2({
     type: "string",
@@ -3574,7 +3707,6 @@ function _uuidv7(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _url(Class2, params) {
   return new Class2({
     type: "string",
@@ -3584,7 +3716,6 @@ function _url(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _emoji2(Class2, params) {
   return new Class2({
     type: "string",
@@ -3594,7 +3725,6 @@ function _emoji2(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _nanoid(Class2, params) {
   return new Class2({
     type: "string",
@@ -3604,7 +3734,6 @@ function _nanoid(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _cuid(Class2, params) {
   return new Class2({
     type: "string",
@@ -3614,7 +3743,6 @@ function _cuid(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _cuid2(Class2, params) {
   return new Class2({
     type: "string",
@@ -3624,7 +3752,6 @@ function _cuid2(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _ulid(Class2, params) {
   return new Class2({
     type: "string",
@@ -3634,7 +3761,6 @@ function _ulid(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _xid(Class2, params) {
   return new Class2({
     type: "string",
@@ -3644,7 +3770,6 @@ function _xid(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _ksuid(Class2, params) {
   return new Class2({
     type: "string",
@@ -3654,7 +3779,6 @@ function _ksuid(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _ipv4(Class2, params) {
   return new Class2({
     type: "string",
@@ -3664,7 +3788,6 @@ function _ipv4(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _ipv6(Class2, params) {
   return new Class2({
     type: "string",
@@ -3674,7 +3797,6 @@ function _ipv6(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _cidrv4(Class2, params) {
   return new Class2({
     type: "string",
@@ -3684,7 +3806,6 @@ function _cidrv4(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _cidrv6(Class2, params) {
   return new Class2({
     type: "string",
@@ -3694,7 +3815,6 @@ function _cidrv6(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _base64(Class2, params) {
   return new Class2({
     type: "string",
@@ -3704,7 +3824,6 @@ function _base64(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _base64url(Class2, params) {
   return new Class2({
     type: "string",
@@ -3714,7 +3833,6 @@ function _base64url(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _e164(Class2, params) {
   return new Class2({
     type: "string",
@@ -3724,7 +3842,6 @@ function _e164(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _jwt(Class2, params) {
   return new Class2({
     type: "string",
@@ -3734,7 +3851,6 @@ function _jwt(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _isoDateTime(Class2, params) {
   return new Class2({
     type: "string",
@@ -3746,7 +3862,6 @@ function _isoDateTime(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _isoDate(Class2, params) {
   return new Class2({
     type: "string",
@@ -3755,7 +3870,6 @@ function _isoDate(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _isoTime(Class2, params) {
   return new Class2({
     type: "string",
@@ -3765,7 +3879,6 @@ function _isoTime(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _isoDuration(Class2, params) {
   return new Class2({
     type: "string",
@@ -3774,11 +3887,9 @@ function _isoDuration(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _number(Class2, params) {
   return new Class2(snapshotChecks({ type: "number", checks: [], ...normalizeParams(params) }));
 }
-// @__NO_SIDE_EFFECTS__
 function _int(Class2, params) {
   return new Class2({
     type: "number",
@@ -3788,27 +3899,23 @@ function _int(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _boolean(Class2, params) {
   return new Class2({
     type: "boolean",
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _unknown(Class2) {
   return new Class2({
     type: "unknown"
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _never(Class2, params) {
   return new Class2({
     type: "never",
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _lt(value, params) {
   return new $ZodCheckLessThan({
     check: "less_than",
@@ -3817,7 +3924,6 @@ function _lt(value, params) {
     inclusive: false
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _lte(value, params) {
   return new $ZodCheckLessThan({
     check: "less_than",
@@ -3826,7 +3932,6 @@ function _lte(value, params) {
     inclusive: true
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _gt(value, params) {
   return new $ZodCheckGreaterThan({
     check: "greater_than",
@@ -3835,7 +3940,6 @@ function _gt(value, params) {
     inclusive: false
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _gte(value, params) {
   return new $ZodCheckGreaterThan({
     check: "greater_than",
@@ -3844,7 +3948,6 @@ function _gte(value, params) {
     inclusive: true
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _multipleOf(value, params) {
   return new $ZodCheckMultipleOf({
     check: "multiple_of",
@@ -3852,7 +3955,6 @@ function _multipleOf(value, params) {
     value
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _maxLength(maximum, params) {
   const ch = new $ZodCheckMaxLength({
     check: "max_length",
@@ -3861,7 +3963,6 @@ function _maxLength(maximum, params) {
   });
   return ch;
 }
-// @__NO_SIDE_EFFECTS__
 function _minLength(minimum, params) {
   return new $ZodCheckMinLength({
     check: "min_length",
@@ -3869,7 +3970,6 @@ function _minLength(minimum, params) {
     minimum
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _length(length, params) {
   return new $ZodCheckLengthEquals({
     check: "length_equals",
@@ -3877,7 +3977,6 @@ function _length(length, params) {
     length
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _regex(pattern, params) {
   return new $ZodCheckRegex({
     check: "string_format",
@@ -3886,7 +3985,6 @@ function _regex(pattern, params) {
     pattern
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _lowercase(params) {
   return new $ZodCheckLowerCase({
     check: "string_format",
@@ -3894,7 +3992,6 @@ function _lowercase(params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _uppercase(params) {
   return new $ZodCheckUpperCase({
     check: "string_format",
@@ -3902,7 +3999,6 @@ function _uppercase(params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _includes(includes, params) {
   return new $ZodCheckIncludes({
     check: "string_format",
@@ -3911,7 +4007,6 @@ function _includes(includes, params) {
     includes
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _startsWith(prefix, params) {
   return new $ZodCheckStartsWith({
     check: "string_format",
@@ -3920,7 +4015,6 @@ function _startsWith(prefix, params) {
     prefix
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _endsWith(suffix, params) {
   return new $ZodCheckEndsWith({
     check: "string_format",
@@ -3929,34 +4023,27 @@ function _endsWith(suffix, params) {
     suffix
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _overwrite(tx) {
   return new $ZodCheckOverwrite({
     check: "overwrite",
     tx
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _normalize(form) {
   return /* @__PURE__ */ _overwrite((input) => input.normalize(form));
 }
-// @__NO_SIDE_EFFECTS__
 function _trim() {
   return /* @__PURE__ */ _overwrite((input) => input.trim());
 }
-// @__NO_SIDE_EFFECTS__
 function _toLowerCase() {
   return /* @__PURE__ */ _overwrite((input) => input.toLowerCase());
 }
-// @__NO_SIDE_EFFECTS__
 function _toUpperCase() {
   return /* @__PURE__ */ _overwrite((input) => input.toUpperCase());
 }
-// @__NO_SIDE_EFFECTS__
 function _slugify() {
   return /* @__PURE__ */ _overwrite((input) => slugify(input));
 }
-// @__NO_SIDE_EFFECTS__
 function _array(Class2, element, params) {
   return new Class2({
     type: "array",
@@ -3967,7 +4054,6 @@ function _array(Class2, element, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _refine(Class2, fn, _params) {
   const schema = new Class2({
     type: "custom",
@@ -3977,7 +4063,6 @@ function _refine(Class2, fn, _params) {
   });
   return schema;
 }
-// @__NO_SIDE_EFFECTS__
 function _superRefine(fn, params) {
   const ch = /* @__PURE__ */ _check((payload) => {
     payload.addIssue = (issue2) => {
@@ -3999,7 +4084,6 @@ function _superRefine(fn, params) {
   }, params);
   return ch;
 }
-// @__NO_SIDE_EFFECTS__
 function _check(fn, params) {
   const ch = new $ZodCheck({
     check: "custom",
@@ -4009,7 +4093,6 @@ function _check(fn, params) {
   return ch;
 }
 
-// node_modules/zod/v4/core/to-json-schema.js
 function assignProps(target, ...sources) {
   for (const source of sources) {
     for (const key of Reflect.ownKeys(source)) {
@@ -4539,7 +4622,6 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
   return finalize(ctx, schema);
 };
 
-// node_modules/zod/v4/core/json-schema-processors.js
 var narrowMin = (agg, key, value) => {
   if (agg[key] === void 0 || value > agg[key])
     agg[key] = value;
@@ -5051,8 +5133,8 @@ function rewriteKeyNames(ctx) {
       bySchema.set(entry.schema, entry);
   }
   const rewrites = /* @__PURE__ */ new Map();
-  for (const record of pendingRecords.get(ctx) ?? []) {
-    const seen = ctx.seen.get(record);
+  for (const record2 of pendingRecords.get(ctx) ?? []) {
+    const seen = ctx.seen.get(record2);
     const names = (seen?.def ?? seen?.schema)?.propertyNames;
     if (!names || names === true || rewrites.has(names))
       continue;
@@ -5287,7 +5369,6 @@ function toJSONSchema(input, params) {
   return finalize(ctx, input);
 }
 
-// node_modules/zod/v4/classic/errors.js
 var _installedErrorProtos = /* @__PURE__ */ new WeakSet([Object.prototype, Error.prototype]);
 function _lazyMethod(proto, key, make) {
   Object.defineProperty(proto, key, {
@@ -5332,7 +5413,6 @@ var ZodRealError = /* @__PURE__ */ $constructor("ZodError", initializer2, void 0
   Parent: Error
 });
 
-// node_modules/zod/v4/classic/parse.js
 var parse = /* @__PURE__ */ _parse(ZodRealError);
 var parseAsync = /* @__PURE__ */ _parseAsync(ZodRealError);
 var safeParse = /* @__PURE__ */ _safeParse(ZodRealError);
@@ -5346,7 +5426,6 @@ var safeDecode = /* @__PURE__ */ _safeDecode(ZodRealError);
 var safeEncodeAsync = /* @__PURE__ */ _safeEncodeAsync(ZodRealError);
 var safeDecodeAsync = /* @__PURE__ */ _safeDecodeAsync(ZodRealError);
 
-// node_modules/zod/v4/classic/schemas.js
 function _ensureDefaultLocale() {
   if (!globalConfig.localeError)
     config(en_default());
@@ -5984,6 +6063,30 @@ function intersection(left, right) {
     right
   });
 }
+var ZodRecord = /* @__PURE__ */ $constructor("ZodRecord", (inst, def) => {
+  _ensureDefaultMemoizer();
+  $ZodRecord.init(inst, def);
+  ZodType.init(inst, def);
+  inst._zod.processJSONSchema = (ctx, json, params) => recordProcessor(inst, ctx, json, params);
+  inst.keyType = def.keyType;
+  inst.valueType = def.valueType;
+});
+function record(keyType, valueType, params) {
+  if (!valueType || !valueType._zod) {
+    return new ZodRecord({
+      type: "record",
+      keyType: string2(),
+      valueType: keyType,
+      ...util_exports.normalizeParams(valueType)
+    });
+  }
+  return new ZodRecord({
+    type: "record",
+    keyType,
+    valueType,
+    ...util_exports.normalizeParams(params)
+  });
+}
 var ZodEnum = /* @__PURE__ */ $constructor("ZodEnum", (inst, def) => {
   $ZodEnum.init(inst, def);
   ZodType.init(inst, def);
@@ -6203,17 +6306,14 @@ function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
 
-// packages/super-teams/src/board/board.mjs
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
-// packages/super-teams/src/board/engine-view.mjs
 var uuid2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 var isEngineReference = (value) => typeof value === "string" && (value.startsWith("engine:") || uuid2.test(value));
 
-// packages/super-teams/src/board/board.mjs
 function text(value, label, max = 2e3) {
   if (typeof value !== "string" || !value.trim() || value.length > max) throw new Error(`${label}: non-empty text, max ${max} characters`);
   return value.trim();
@@ -7052,7 +7152,6 @@ function execute(name, args) {
   }
 }
 
-// packages/super-teams/src/definitions.mjs
 var short = string2().trim().min(1).max(200);
 var list = array(string2().trim().min(1).max(2e3)).max(32).optional();
 var reference = object({ ref: string2().trim().min(1).max(2e3), version: short }).strict();
@@ -7134,9 +7233,9 @@ var primaryRawDefinitions = [
   ],
   [
     "engine_team",
-    "Manage durable SQLite-persisted teams, frozen goal criteria (R2), immutable delivery candidates & bound approvals (R3-R6), atomic local branch publish, and read-only GitHub PR reconciliation (R7-R8) in the single engine store.",
+    "Manage durable SQLite-persisted teams, frozen goal criteria (R2), immutable delivery candidates & bound approvals (R3-R6), atomic local branch publish, read-only GitHub PR reconciliation (R7-R8), budget guards, repo probing, and remote PR delivery (v0.19) in the single engine store.",
     object({
-      action: _enum(["prepare", "create", "list", "overview", "graph", "accept_checked", "merge_preview", "merge_apply", "criteria_get", "criteria_preview", "criteria_freeze", "criteria_signoff", "candidate_create", "candidate_list", "candidate_get", "candidate_approve", "approval_revoke", "candidate_publish_local", "publish_reconcile", "candidate_base_drift", "pr_reconcile", "pause", "resume", "cancel", "archive", "unarchive"]),
+      action: _enum(["prepare", "create", "list", "overview", "graph", "accept_checked", "merge_preview", "merge_apply", "criteria_get", "criteria_preview", "criteria_freeze", "criteria_signoff", "candidate_create", "candidate_list", "candidate_get", "candidate_approve", "approval_revoke", "candidate_publish_local", "publish_reconcile", "candidate_base_drift", "pr_reconcile", "budget_get", "budget_set", "repo_probe", "env_recipe_approve", "security_posture", "remote_push", "remote_pr_create", "remote_reconcile", "remote_unknown_resolve", "remote_event_ingest", "remote_drift_resolve", "pause", "resume", "cancel", "archive", "unarchive"]),
       teamId: string2().optional(),
       requestId: string2().optional(),
       name: string2().optional(),
@@ -7157,7 +7256,7 @@ var primaryRawDefinitions = [
       parentCandidateId: string2().min(1).max(120).optional(),
       taskIds: array(string2().min(1)).max(64).optional(),
       approvalId: string2().min(1).max(120).optional(),
-      purpose: _enum(["local_publish", "draft_pr", "request_merge"]).optional(),
+      purpose: _enum(["local_publish", "draft_pr", "request_merge", "remote_push"]).optional(),
       reason: string2().max(2e3).optional(),
       repo: string2().min(1).max(200).optional(),
       prNumber: number2().int().min(1).optional(),
@@ -7166,6 +7265,31 @@ var primaryRawDefinitions = [
       baseBranch: string2().min(1).max(200).optional(),
       expectedIntentId: string2().min(1).max(120).optional(),
       linkId: string2().min(1).max(120).optional(),
+      budget: object({
+        maxTeamAttempts: number2().int().min(1).nullable().optional(),
+        maxInFlight: number2().int().min(1).nullable().optional(),
+        maxTaskDurationMs: number2().int().min(100).nullable().optional(),
+        maxTeamTokensSoft: number2().int().min(1).nullable().optional(),
+        sameErrorBreakerThreshold: number2().int().min(1).nullable().optional()
+      }).strict().optional(),
+      allowedRemoteRepos: array(string2().min(1)).max(32).optional(),
+      deliveryStreamId: string2().min(1).max(120).optional(),
+      remoteUrl: string2().min(1).max(1e3).optional(),
+      stableBranch: string2().min(1).max(200).optional(),
+      expectedOldOid: string2().min(1).max(120).optional(),
+      title: string2().min(1).max(300).optional(),
+      body: string2().max(8e3).optional(),
+      draft: boolean2().optional(),
+      intentId: string2().min(1).max(120).optional(),
+      checkSignature: string2().min(1).max(200).optional(),
+      failureSummary: string2().max(4e3).optional(),
+      memberId: string2().min(1).max(120).optional(),
+      newBranch: string2().min(1).max(200).optional(),
+      selectedCommands: array(unknown()).max(16).optional(),
+      setupCommand: string2().max(500).optional(),
+      envVars: record(string2(), string2()).optional(),
+      approvedBy: string2().min(1).max(200).optional(),
+      requireGoalPassed: boolean2().optional(),
       members: array(object({
         name: string2().min(1),
         role: string2().min(1),

@@ -299,6 +299,9 @@ export function createDshEngineRouter({
         });
       }
 
+      if (req.method === 'GET' && pathname === '/api/refusals') return send(200, { refusals: engine.listRefusals(integer(query.limit, 50, 200)) });
+      if (req.method === 'GET' && pathname === '/api/security/posture') return send(200, engine.getIsolationPosture());
+      if (req.method === 'POST' && pathname === '/api/repo/probe') return send(200, engine.probeRepoEnvironment(input.repoPath));
       if (req.method === 'GET' && pathname === '/api/overview') {
         if (query.attentionOnly !== undefined && !['true', 'false'].includes(query.attentionOnly)) {
           throw new Error('attentionOnly must be true or false');
@@ -380,6 +383,22 @@ export function createDshEngineRouter({
             if (req.method === 'POST' && parts[5] === 'publish-local') return send(200, await engine.publishCandidateLocal(teamId, { ...input, candidateId: candId }));
             if (req.method === 'POST' && parts[5] === 'base-drift') return send(200, await engine.checkCandidateBaseDrift(teamId, { ...input, candidateId: candId }));
           }
+        }
+        if (parts[3] === 'budget') {
+          if (req.method === 'GET') return send(200, engine.getTeamBudget(teamId));
+          if (req.method === 'POST') return send(200, engine.setTeamBudget(teamId, input));
+        }
+        if (parts[3] === 'env-recipes') {
+          if (req.method === 'GET') return send(200, { recipes: engine.listEnvRecipes(teamId) });
+          if (req.method === 'POST') return send(201, engine.approveEnvRecipe(teamId, input));
+        }
+        if (parts[3] === 'remote') {
+          if (req.method === 'POST' && parts[4] === 'push') return send(200, await engine.pushCandidateRemote(teamId, input));
+          if (req.method === 'POST' && parts[4] === 'pr-create') return send(200, await engine.createPullRequestIdempotent(teamId, input));
+          if (req.method === 'POST' && parts[4] === 'reconcile') return send(200, await engine.reconcileRemoteIntents(teamId, input));
+          if (req.method === 'POST' && parts[4] === 'unknown' && parts[5] === 'resolve') return send(200, engine.resolveUnknownPrIntent(teamId, input));
+          if (req.method === 'POST' && parts[4] === 'events') return send(200, engine.ingestRemoteFailureEvent(teamId, input));
+          if (req.method === 'POST' && parts[4] === 'drift' && parts[5] === 'resolve') return send(200, engine.resolveExternalDrift(teamId, input));
         }
         if (req.method === 'POST' && parts[3] === 'approvals' && parts[4] && parts[5] === 'revoke') {
           return send(200, engine.revokeApproval(teamId, { ...input, approvalId: decodeURIComponent(parts[4]) }));
@@ -463,11 +482,13 @@ export function createDshEngineRouter({
 
       send(404, { error: '没有该操作' });
     } catch (error) {
+      engine.recordRefusal?.('http', req.url || '', error.message || String(error), { method: req.method, code: error.code ?? null });
       if (!res.headersSent) {
         send(400, {
           error: error.message || String(error),
+          ...(error.code ? { code: error.code } : {}),
           ...(error.code === 'CONTEXT_BUDGET_EXCEEDED'
-            ? Object.fromEntries(['code', 'budgetBytes', 'requiredBytes', 'overByBytes', 'budgetBreakdown'].map(key => [key, error[key]]))
+            ? Object.fromEntries(['budgetBytes', 'requiredBytes', 'overByBytes', 'budgetBreakdown'].map(key => [key, error[key]]))
             : {}),
         });
       } else {
