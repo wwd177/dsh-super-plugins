@@ -22,21 +22,23 @@ const common = {
 };
 
 const checkSchema = z.object({
-  type: z.enum(['file_exists', 'file_contains', 'json_equals', 'node_test']),
-  path: z.string().min(1),
+  type: z.enum(['file_exists', 'file_contains', 'json_equals', 'node_test', 'command_test']),
+  path: z.string().min(1).optional(),
   value: z.string().optional(),
   pointer: z.string().optional(),
   expected: z.unknown().describe('Expected JSON value for json_equals').optional(),
   sourceId: z.string().optional(),
   sha256: z.string().optional(),
   testScript: z.string().min(1).max(16384).optional().describe('Trusted CommonJS behavioral test script for node_test (receives checked artifact path as process.argv[1]; exit 0 = pass). Hashed and stored in team ContextStore at plan creation time.'),
+  command: z.enum(['node', 'pytest', 'python', 'python3', 'cargo', 'go', 'dotnet', 'npm']).optional().describe('Structured local test runner for command_test (npx and inline eval flags are forbidden).'),
+  args: z.array(z.string().min(1).max(512)).max(32).optional().describe('Structured arguments for command_test (e.g. ["--test", "tests/app.test.mjs"], ["-m", "pytest"], ["test"]).'),
   timeoutMs: z.number().int().min(100).max(120000).optional(),
 }).strict();
 
 const schedulingFields = {
   priority: z.enum(['critical', 'high', 'normal', 'low']).optional(),
-  writeScopes: z.array(z.string().min(1).max(240)).max(16).optional().describe('Declared relative write scopes. Enforced by runtime scheduler mutex (serializes overlapping concurrent tasks) and post-run workspace verification (fails undeclared writes).'),
-  autoAccept: z.boolean().optional().describe('Requires at least one behavioral node_test check. Structural checks alone (file_exists, file_contains, json_equals) never auto-accept.'),
+  writeScopes: z.array(z.string().min(1).max(240)).max(16).optional().describe('Declared relative write scopes. Enforced by runtime scheduler mutex (serializes overlapping concurrent tasks) and post-run workspace verification / git-worktree two-tree diff (fails undeclared writes).'),
+  autoAccept: z.boolean().optional().describe('Requires at least one immutable ContextStore-frozen node_test check. command_test and structural checks reach "checked" state and require explicit review/accept.'),
   maxRetries: z.number().int().min(0).max(3).optional(),
 };
 
@@ -67,13 +69,17 @@ const primaryRawDefinitions = [
   ],
   [
     'engine_team',
-    'Manage durable SQLite-persisted teams (engine.sqlite WAL, survives DeepSeek Harness restarts). Use action=prepare to atomically create a paused team with 1-24 DAG tasks (priority, runtime-locked writeScopes, maxRetries, and behavioral node_test checks with inline testScript for autoAccept) and open the right-sidebar workbench; then resume when ready. Supports prepare, create, list, overview (attentionOnly), graph (CPM waves/critical path/scope overlap), accept_checked, pause, resume, cancel, archive and unarchive.',
+    'Manage durable SQLite-persisted teams (engine.sqlite WAL, survives DeepSeek Harness restarts). Use action=prepare to atomically create a paused team with 1-24 DAG tasks (isolated or git-worktree mode with repoPath, priority, runtime-locked writeScopes, maxRetries, and behavioral node_test/command_test checks for autoAccept) and open the right-sidebar workbench; then resume when ready. Supports prepare, create, list, overview (attentionOnly), graph (CPM waves/critical path/scope overlap), accept_checked, merge_preview, merge_apply (atomic superagent/<slug> branch publish), pause, resume, cancel, archive and unarchive.',
     z.object({
-      action: z.enum(['prepare', 'create', 'list', 'overview', 'graph', 'accept_checked', 'pause', 'resume', 'cancel', 'archive', 'unarchive']),
+      action: z.enum(['prepare', 'create', 'list', 'overview', 'graph', 'accept_checked', 'merge_preview', 'merge_apply', 'pause', 'resume', 'cancel', 'archive', 'unarchive']),
       teamId: z.string().optional(),
       requestId: z.string().optional(),
       name: z.string().optional(),
       goal: z.string().optional(),
+      workspaceMode: z.enum(['isolated', 'git-worktree']).optional(),
+      repoPath: z.string().min(1).max(1000).optional(),
+      branchName: z.string().min(1).max(100).optional(),
+      integrationCheck: checkSchema.optional(),
       members: z.array(z.object({
         name: z.string().min(1),
         role: z.string().min(1),
@@ -86,7 +92,7 @@ const primaryRawDefinitions = [
   ],
   [
     'engine_submit',
-    'Submit one persistent task into engine.sqlite with stable requestId, difficulty, optional priority/writeScopes/autoAccept/maxRetries, same-team dependencies, sources and objective checks. autoAccept=true strictly requires at least one behavioral node_test check (via testScript or sourceId+sha256).',
+    'Submit one persistent task into engine.sqlite with stable requestId, difficulty, optional priority/writeScopes/autoAccept/maxRetries, same-team dependencies, sources and objective checks (file_exists, file_contains, json_equals, node_test, command_test). autoAccept=true strictly requires at least one immutable node_test check; command_test reaches "checked" state for explicit review/accept.',
     z.object({
       requestId: z.string().min(1),
       title: z.string().min(1),

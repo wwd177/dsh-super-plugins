@@ -7,6 +7,7 @@ import { Transform } from 'node:stream';
 import { pipeline, finished } from 'node:stream/promises';
 import yazl from './vendor/yazl.cjs';
 import { readSnapshot, copySnapshot, hashFile } from './artifact-snapshots.mjs';
+import { readVerifiedGitPatch } from './git-worktree.mjs';
 
 export const DELIVERY_LIMITS = Object.freeze({ maxBytes: 128 * 1024 * 1024, maxEntries: 2048, maxTasks: 100 });
 export const DELIVERY_TIMEOUT_MS = 120000;
@@ -70,12 +71,17 @@ export async function createDeliveryExport({ engine, teamId, signal, limits: req
     if (new Set(tasks.map(task => task.id)).size !== tasks.length) fail(409, '团队任务 ID 重复，不能导出');
     if (accepted.some(task => !task.acceptance?.snapshotId)) fail(409, '已验收任务缺少冻结快照，请先执行 freeze 再导出；本操作不会自动冻结');
     const observedAt = new Date().toISOString(), snapshotRoot = path.join(engine.dataDir, 'artifact-snapshots');
-    const snapshots = new Map(); let totalBytes = 0, entryCount = 2;
+    const snapshots = new Map(), gitPatches = new Map(); let totalBytes = 0, entryCount = 2;
     for (const task of accepted) {
       checkAbort();
       const snapshot = await readSnapshot({ root: snapshotRoot, id: task.acceptance.snapshotId });
       const records = [...snapshot.manifest.files, ...(snapshot.manifest.result ? [snapshot.manifest.result] : [])];
       totalBytes += records.reduce((sum, file) => sum + file.bytes, 0); entryCount += records.length;
+      if (task.acceptance.git?.patchFile && task.acceptance.git?.patchSha256) {
+        const patchBytes = readVerifiedGitPatch({ dataDir: engine.dataDir, patchFile: task.acceptance.git.patchFile, patchSha256: task.acceptance.git.patchSha256 });
+        gitPatches.set(task.id, { bytes: patchBytes, sha256: task.acceptance.git.patchSha256 });
+        totalBytes += patchBytes.length; entryCount += 1;
+      }
       if (totalBytes > limits.maxBytes || entryCount > limits.maxEntries) fail(413, '交付文件超过未压缩字节或条目限额，未进行截断');
       if ((snapshot.manifest.result?.sha256 ?? null) !== (task.resultSha256 ?? null) || task.acceptance.resultSha256 !== task.resultSha256) fail(409, '已验收结果与冻结快照版本不一致');
       const artifacts = task.acceptance.artifacts;
@@ -100,16 +106,22 @@ export async function createDeliveryExport({ engine, teamId, signal, limits: req
         await fsp.rename(path.join(copied, 'result.txt'), path.join(taskRoot, 'result.txt'));
         files.push({ path: `artifacts/${task.id}/result.txt`, ...snapshot.manifest.result });
       }
+      if (gitPatches.has(task.id)) {
+        const patch = gitPatches.get(task.id);
+        await fsp.writeFile(path.join(taskRoot, 'changes.patch'), patch.bytes, { flag: 'wx' });
+        files.push({ path: `artifacts/${task.id}/changes.patch`, bytes: patch.bytes.length, sha256: patch.sha256 });
+      }
     }
     const safeReason = (value, task) => {
       if (typeof value !== 'string') return null;
       let text = value.slice(0, 2000).replace(/[\x00-\x1f\x7f]/g, ' ');
-      for (const local of [task.cwd, engine.dataDir].filter(value => typeof value === 'string' && value)) text = text.replaceAll(local, '[local path omitted]');
+      for (const local of [task.cwd, engine.dataDir, captured.repoPath].filter(value => typeof value === 'string' && value)) text = text.replaceAll(local, '[local path omitted]');
       return text + (value.length > 2000 ? ' [reason truncated]' : '');
     };
     const facts = tasks.map(task => ({ id: task.id, revision: task.revision, state: field(task.state), executionUnresolved: passed(task.executionUnresolved),
       hostCompletionStatus: field(task.completionStatus), mechanicalChecks: { status: field(task.verification?.status) ?? 'not_verified', passed: passed(task.verification?.passed) },
       included: task.state === 'accepted', snapshotId: task.state === 'accepted' ? task.acceptance.snapshotId : null,
+      ...(gitPatches.has(task.id) ? { gitPatchSha256: gitPatches.get(task.id).sha256 } : {}),
       acceptance: task.acceptance ? { hostCompletionStatus: field(task.acceptance.hostCompletionStatus), acknowledgeHostFailure: passed(task.acceptance.acknowledgeHostFailure), reason: safeReason(task.acceptance.reason, task), versionPinned: passed(task.acceptance.versionPinned) } : null }));
     const members = (captured.members ?? []).map(member => ({ id: identifier(member.id), state: field(member.state), taskIds: (member.taskIds ?? []).map(identifier) }));
     const unassigned = members.filter(member => member.taskIds.length === 0);
@@ -121,6 +133,31 @@ export async function createDeliveryExport({ engine, teamId, signal, limits: req
       '仅已验收任务的固定快照文件及可用冻结结果包含在包中。未自动 freeze、重跑任务或改变验收状态。观察后状态仍可能变化；发出下载前已再次核对该团队版本。', '', '任务已验收不表示整个项目已完成集成。本包不执行文件合并；整项交付仍需在最终目标目录验证实际行为。', '', warning, '',
       'manifest.json 的 files 为所有其他 ZIP 条目的 SHA-256 和字节数；manifest.json 自身不列入自校验。内部数据库、连接令牌、原生绑定、提示词和运行日志未被收集；用户登记的产物内容由分享者检查。', ''];
     const report = Buffer.from(lines.join('\n')); await fsp.writeFile(path.join(payload, 'DELIVERY.md'), report, { flag: 'wx' }); files.unshift({ path: 'DELIVERY.md', bytes: report.length, sha256: hash(report) });
+    if (gitPatches.size > 0) {
+      const handoffLines = [
+        '# Git Worktree 集成交接清单 (HANDOFF)',
+        '',
+        `- 观察时间：${observedAt}`,
+        `- 团队 ID：${teamId}`,
+        `- 工作区模式：git-worktree`,
+        `- 基线提交 (baseCommit)：${captured.baseCommit ?? 'unknown'}`,
+        ...(captured.lastMerge?.branch ? [`- 最近已发布分支：${captured.lastMerge.branch} (${captured.lastMerge.mergedCommit})`] : []),
+        '',
+        '## 已冻结的增量补丁（按验收任务列出）',
+        '',
+        ...accepted.filter(t => gitPatches.has(t.id)).map(t => `- ${t.id}: snapshot=${t.acceptance.snapshotId}; patch=artifacts/${t.id}/changes.patch; sha256=${gitPatches.get(t.id).sha256}`),
+        '',
+        '## 推荐集成方式',
+        '',
+        '1. 优先使用引擎内置 `engine_team(action="merge_preview")` 预览冲突与集成测试，通过后使用 `engine_team(action="merge_apply", branchName="...")` 原子发布到全新的 `superagent/<slug>` 分支。',
+        '2. 或在目标仓库新建基于 `baseCommit` 的独立分支后，按 DAG 依赖顺序依次执行 `git apply --index artifacts/<taskId>/changes.patch` 并运行完整测试套件。',
+        '',
+      ];
+      const handoff = Buffer.from(handoffLines.join('\n'));
+      await fsp.writeFile(path.join(payload, 'HANDOFF.md'), handoff, { flag: 'wx' });
+      files.splice(1, 0, { path: 'HANDOFF.md', bytes: handoff.length, sha256: hash(handoff) });
+      totalBytes += handoff.length;
+    }
     const manifest = { version: 1, kind: 'superagent-accepted-delivery', observedAt, team: { id: teamId, revision: captured.revision, control: field(captured.control), unassignedMemberCount: unassigned.length }, members, tasks: facts, warning, integration: 'Not performed by this export; validate behavior in the final target workspace.', checksumScope: 'All ZIP payload entries except manifest.json itself', files };
     const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`); await fsp.writeFile(path.join(payload, 'manifest.json'), manifestBytes, { flag: 'wx' });
     totalBytes += report.length + manifestBytes.length;

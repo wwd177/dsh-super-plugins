@@ -350,6 +350,8 @@ export class DshSuperTeamsRuntime {
           name: a.name,
           goal: a.goal,
           members: a.members,
+          ...(a.workspaceMode !== undefined ? { workspaceMode: a.workspaceMode } : {}),
+          ...(a.repoPath !== undefined ? { repoPath: a.repoPath } : {}),
           ...(a.action === 'prepare' ? { tasks: a.tasks } : {}),
           ...(caller.rootSessionId ? { sessionId: caller.rootSessionId } : {}),
         });
@@ -362,6 +364,8 @@ export class DshSuperTeamsRuntime {
             id: created.id,
             name: created.name,
             control: created.control,
+            workspaceMode: created.workspaceMode ?? 'isolated',
+            ...(created.baseCommit ? { baseCommit: created.baseCommit } : {}),
             sessionId: created.sessionId ?? null,
             openedInSidebar: true,
             members: created.members.map(({ id, name, role }) => ({ id, name, role })),
@@ -377,6 +381,8 @@ export class DshSuperTeamsRuntime {
           id: created.id,
           name: created.name,
           control: created.control,
+          workspaceMode: created.workspaceMode ?? 'isolated',
+          ...(created.baseCommit ? { baseCommit: created.baseCommit } : {}),
           sessionId: created.sessionId ?? null,
           openedInSidebar: true,
           members: created.members.map(m => ({ id: m.id, name: m.name, role: m.role })),
@@ -394,6 +400,13 @@ export class DshSuperTeamsRuntime {
       }
       if (a.action === 'graph') return engine.getTeamGraph(a.teamId);
       if (a.action === 'accept_checked') return engine.acceptAllChecked(a.teamId, { actor });
+      if (a.action === 'merge_preview' || a.action === 'merge_apply') {
+        return engine.mergeTeam(a.teamId, {
+          apply: a.action === 'merge_apply',
+          branchName: a.branchName,
+          integrationCheck: a.integrationCheck,
+        });
+      }
       if (a.action === 'archive' || a.action === 'unarchive') {
         return engine.archiveTeam(a.teamId, a.action === 'archive');
       }

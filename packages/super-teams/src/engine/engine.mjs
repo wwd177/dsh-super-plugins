@@ -4,9 +4,18 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { Store } from './store.mjs';
 import { ContextStore } from './context.mjs';
-import { artifactFiles, hashArtifact, secureFile, validateCheck, validateTestSource, verifyArtifacts } from './verification.mjs';
+import { artifactFiles, commandTestSelfModificationConflict, hashArtifact, isBehavioralCheck, runStandaloneCheck, secureFile, validateCheck, validateTestSource, verifyArtifacts } from './verification.mjs';
 import { freezeSnapshot, readSnapshot, verifySnapshot, copySnapshot, readSnapshotResult, readVerifiedFilePage } from './artifact-snapshots.mjs';
 import { VALID_PRIORITIES, analyzeTaskGraph, rankReadyCandidates, serializeTaskGraph, taskScopesOverlap } from './scheduler.mjs';
+import {
+  exportCandidateForTesting,
+  prepareAttemptWorktree,
+  readVerifiedGitPatch,
+  removeAttemptWorktree,
+  runTeamMerge,
+  treeContainsTopLevelPath,
+  validateGitRepoSync,
+} from './git-worktree.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const now = () => new Date().toISOString();
@@ -16,7 +25,7 @@ const executing = new Set(['dispatching', 'running', 'pausing', 'cancelling']);
 const teamPreserved = new Set(['accepted', 'checked', 'submitted', 'failed', 'cancelled', 'abandoned']);
 const memberStatePriority = ['unknown', 'paused-unconfirmed', 'cancelled-unconfirmed', 'failed', 'running', 'dispatching', 'pausing', 'cancelling', 'submitted', 'checked', 'blocked', 'queued', 'paused', 'cancelled', 'accepted'];
 const countsOf = tasks => tasks.reduce((counts, task) => { counts[task.state] = (counts[task.state] ?? 0) + 1; return counts; }, {});
-const taskSummaryFields = ['id', 'title', 'teamId', 'memberId', 'sessionId', 'teamPauseOrigin', 'revision', 'state', 'blockReason', 'control', 'dependsOn', 'difficulty', 'priority', 'writeScopes', 'autoAccept', 'maxRetries', 'retryCount', 'nextRetryAt', 'cwd', 'threadId', 'turnId', 'attemptId', 'model', 'effort', 'modelReason', 'summary', 'error', 'runtimeError', 'completionStatus', 'executionUnresolved', 'reworkCount', 'reworkFeedback', 'startedAt', 'finishedAt', 'durationMs', 'usage', 'createdAt', 'updatedAt'];
+const taskSummaryFields = ['id', 'title', 'teamId', 'memberId', 'sessionId', 'teamPauseOrigin', 'revision', 'state', 'blockReason', 'control', 'dependsOn', 'difficulty', 'priority', 'writeScopes', 'autoAccept', 'maxRetries', 'retryCount', 'nextRetryAt', 'workspaceMode', 'attemptStartCommit', 'cwd', 'threadId', 'turnId', 'attemptId', 'model', 'effort', 'modelReason', 'summary', 'error', 'runtimeError', 'completionStatus', 'executionUnresolved', 'reworkCount', 'reworkFeedback', 'startedAt', 'finishedAt', 'durationMs', 'usage', 'createdAt', 'updatedAt'];
 const taskSummary = (task, liveActivity = null) => ({
   ...Object.fromEntries(taskSummaryFields.map(key => [key, task[key]])),
   ...(liveActivity ? { lastActivity: liveActivity } : {}),
@@ -87,7 +96,7 @@ function taskInput({ title, goal, dependsOn = [], sourceIds = [], difficulty = '
   if (autoAccept !== undefined) {
     if (typeof autoAccept !== 'boolean') throw new Error('autoAccept must be boolean');
     if (autoAccept === true && !checks.some(check => check?.type === 'node_test')) {
-      throw new Error('autoAccept=true requires at least one behavioral node_test check; structural checks (file_exists, file_contains, json_equals) only reach "checked" state and require explicit review/accept');
+      throw new Error('autoAccept=true requires at least one behavioral node_test check frozen in engine ContextStore; command_test and structural checks reach "checked" state and require explicit review/accept');
     }
     input.autoAccept = autoAccept;
   }
@@ -120,7 +129,7 @@ function validateSources({ sourceIds, checks }, contextStore, { allowInlineScrip
   }
 }
 function newTask(input, team, id = randomUUID()) {
-  const task = { id, ...clone(input), revision: 0, state: 'queued', control: 'run', cwd: null, threadId: null, turnId: null, attemptId: null, model: null, effort: null, summary: null, verification: null, error: null, runtimeError: null, executionUnresolved: false, createdAt: now(), updatedAt: now() };
+  const task = { id, ...clone(input), ...(team?.workspaceMode === 'git-worktree' ? { workspaceMode: 'git-worktree' } : {}), revision: 0, state: 'queued', control: 'run', cwd: null, threadId: null, turnId: null, attemptId: null, model: null, effort: null, summary: null, verification: null, error: null, runtimeError: null, executionUnresolved: false, createdAt: now(), updatedAt: now() };
   if (team && team.control !== 'run') {
     task.control = team.control; task.state = team.control === 'pause' ? 'paused' : 'cancelled';
     if (team.control === 'pause') task.teamPauseOrigin = { teamId: team.id, priorControl: 'run' };
@@ -240,13 +249,25 @@ export class Engine extends EventEmitter {
     team.revision++; team.updatedAt = now(); this.store.saveTeam(team);
     this.emit('change', { teamId: team.id, revision: team.revision, type, control: team.control });
   }
-  createTeam({ requestId, name, goal, members, tasks, sessionId }) {
+  createTeam({ requestId, name, goal, members, tasks, sessionId, workspaceMode = 'isolated', repoPath }) {
     this._ready();
     if ([requestId, name, goal].some(value => typeof value !== 'string' || !value.trim())) throw new Error('Team requestId, name and goal are required');
     if (name.length > 200 || goal.length > 16000) throw new Error('Team name or goal exceeds the supported length');
     if (sessionId !== undefined && sessionId !== null && (typeof sessionId !== 'string' || !sessionId.trim() || sessionId.length > 180)) throw new Error('Invalid sessionId');
+    if (!['isolated', 'git-worktree'].includes(workspaceMode)) throw new Error('workspaceMode must be "isolated" or "git-worktree"');
+    let gitRepo = null;
+    if (workspaceMode === 'git-worktree') {
+      gitRepo = validateGitRepoSync(repoPath, this.dataDir);
+    } else if (repoPath !== undefined && repoPath !== null && String(repoPath).trim() !== '') {
+      throw new Error('repoPath is only supported when workspaceMode="git-worktree"');
+    }
     if (!Array.isArray(members) || members.length < 1 || members.length > 12 || members.some(member => !member || ['name', 'role', 'responsibility'].some(key => typeof member[key] !== 'string' || !member[key].trim()) || member.name.length > 100 || member.role.length > 200 || member.responsibility.length > 8000)) throw new Error('Team requires 1..12 members with bounded name, role and responsibility');
-    const input = { name, goal, members: members.map(({ name, role, responsibility }) => ({ name, role, responsibility })) };
+    const input = {
+      name,
+      goal,
+      members: members.map(({ name, role, responsibility }) => ({ name, role, responsibility })),
+      ...(workspaceMode === 'git-worktree' ? { workspaceMode, repoPath: gitRepo.repoPath } : {}),
+    };
     const plan = tasks === undefined ? undefined : teamPlan(tasks, input.members, this.contextStore);
     const fingerprint = hash(JSON.stringify(canonical(plan === undefined ? input : { ...input, tasks: plan })));
     const prior = this.store.teamRequest(requestId);
@@ -255,7 +276,18 @@ export class Engine extends EventEmitter {
       return this.getTeam(prior.teamId);
     }
     const cleanSessionId = typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : null;
-    const team = { id: randomUUID(), requestId, ...clone(input), ...(cleanSessionId ? { sessionId: cleanSessionId } : {}), members: input.members.map(member => ({ id: randomUUID(), ...member })), control: 'pause', revision: 1, createdAt: now(), updatedAt: now() };
+    const team = {
+      id: randomUUID(),
+      requestId,
+      ...clone(input),
+      ...(gitRepo ? { workspaceMode: 'git-worktree', repoPath: gitRepo.repoPath, baseCommit: gitRepo.baseCommit, baseBranch: gitRepo.baseBranch } : { workspaceMode: 'isolated' }),
+      ...(cleanSessionId ? { sessionId: cleanSessionId } : {}),
+      members: input.members.map(member => ({ id: randomUUID(), ...member })),
+      control: 'pause',
+      revision: 1,
+      createdAt: now(),
+      updatedAt: now(),
+    };
     let planned = [];
     let teamStore = null;
     if (plan !== undefined) {
@@ -337,7 +369,7 @@ export class Engine extends EventEmitter {
   }
   listTeams() {
     this._ready(); const counts = this.store.teamStateCounts();
-    return this.store.teams().map(({ id, name, control, archived, revision, createdAt, updatedAt, members }) => ({ id, name, control, archived: Boolean(archived), revision, createdAt, updatedAt, memberCount: members.length, counts: counts.get(id) ?? {} }));
+    return this.store.teams().map(({ id, name, control, archived, workspaceMode, baseCommit, lastMerge, revision, createdAt, updatedAt, members }) => ({ id, name, control, archived: Boolean(archived), workspaceMode: workspaceMode ?? 'isolated', ...(baseCommit ? { baseCommit } : {}), ...(lastMerge ? { lastMerge } : {}), revision, createdAt, updatedAt, memberCount: members.length, counts: counts.get(id) ?? {} }));
   }
   async teamControl(id, action) {
     const team = this._team(id);
@@ -496,7 +528,16 @@ export class Engine extends EventEmitter {
         byId.set(task.id, this._save(task, 'dependency-wait'));
       }
     }
-    const candidates = allTasks.filter(task => ['queued', 'blocked'].includes(task.state) && mayRunSnap(task) && task.dependsOn.every(id => byId.get(id)?.state === 'accepted') && !(task.nextRetryAt && task.nextRetryAt > nowMs));
+    const candidates = allTasks.filter(task => {
+      if (!['queued', 'blocked'].includes(task.state) || !mayRunSnap(task)) return false;
+      if (!task.dependsOn.every(id => byId.get(id)?.state === 'accepted')) return false;
+      if (task.nextRetryAt && task.nextRetryAt > nowMs) return false;
+      if (task.state === 'blocked' && task.blockReason === 'preflight' && task.conflictDependencyVersions) {
+        const currentDeps = task.dependsOn.map(id => ({ id, snapshotId: byId.get(id)?.acceptance?.snapshotId ?? null }));
+        if (JSON.stringify(canonical(currentDeps)) === JSON.stringify(canonical(task.conflictDependencyVersions))) return false;
+      }
+      return true;
+    });
     if (!candidates.length) return;
     if (allTasks.filter(task => executing.has(task.state) || task.executionUnresolved).length >= this.maxConcurrent) return;
     const ordered = rankReadyCandidates(candidates, allTasks);
@@ -574,10 +615,12 @@ export class Engine extends EventEmitter {
         context.verifySources(sourceIds);
         const acceptance = task.checks.length ? `\n\nREQUIRED ARTIFACT ACCEPTANCE CHECKS\nProduce these files within this attempt workspace and satisfy every exact check below. These checks are required and are not excerpts.\n${JSON.stringify(task.checks)}\nEND REQUIRED ARTIFACT ACCEPTANCE CHECKS\n` : '';
         const team = task.teamId ? this._team(task.teamId) : null;
-        const assignment = team ? `\n\nTEAM ASSIGNMENT\n${JSON.stringify({ id: team.id, name: team.name, goal: team.goal, member: team.members.find(member => member.id === task.memberId) })}\nEND TEAM ASSIGNMENT\n` : '';
+        const isWorktree = team?.workspaceMode === 'git-worktree';
+        if (isWorktree && native) throw new Error('git-worktree workspaceMode does not support native chat bindings');
+        const assignment = team ? `\n\nTEAM ASSIGNMENT\n${JSON.stringify({ id: team.id, name: team.name, goal: team.goal, workspaceMode: team.workspaceMode ?? 'isolated', member: team.members.find(member => member.id === task.memberId) })}\nEND TEAM ASSIGNMENT\n` : '';
         const scopeSection = task.writeScopes?.length
-          ? `\n\nWRITE SCOPE OWNERSHIP\nStrictly restrict all created and modified files within this attempt workspace (.) to your declared relative write scopes: ${JSON.stringify(task.writeScopes)}. Never write outside this attempt workspace via absolute paths or '..'; undeclared workspace files fail verification.\nEND WRITE SCOPE OWNERSHIP\n`
-          : `\n\nWORKSPACE ISOLATION\nKeep all created and modified files strictly inside this attempt workspace (.) using relative paths. Never modify external absolute paths.\nEND WORKSPACE ISOLATION\n`;
+          ? `\n\nWRITE SCOPE OWNERSHIP\n${isWorktree ? 'This workspace is a detached Git worktree checked out at the team baseCommit with accepted ancestor patches replayed. ' : ''}Strictly restrict all created and modified files within this attempt workspace (.) to your declared relative write scopes: ${JSON.stringify(task.writeScopes)}. Never write outside this attempt workspace via absolute paths or '..'${isWorktree ? ', and never modify or commit out-of-scope files (audited by full two-tree diff against attemptStartCommit)' : ''}; undeclared workspace files fail verification.\nEND WRITE SCOPE OWNERSHIP\n`
+          : `\n\nWORKSPACE ISOLATION\n${isWorktree ? 'This workspace is a detached Git worktree checked out at the team baseCommit with accepted ancestor patches replayed. ' : ''}Keep all created and modified files strictly inside this attempt workspace (.) using relative paths. Never modify external absolute paths.\nEND WORKSPACE ISOLATION\n`;
         const goal = task.goal;
         const priorFailureItems = (task.reworkPriorFailures ?? []).slice(0, 6).map(item => `- [${item.type}] ${item.path}: ${String(item.error ?? 'failed').slice(0, 180)}`);
         const priorFailureBlock = priorFailureItems.length ? `\nPrior verification failures to fix:\n${bounded(priorFailureItems.join('\n'), 1200).text}` : '';
@@ -591,21 +634,52 @@ export class Engine extends EventEmitter {
         const attemptId = randomUUID();
         const relative = path.join('workspaces', task.id, attemptId);
         const cwd = path.join(this.dataDir, relative);
+        let attemptStartCommit = null;
+        let appliedGitDependencies = null;
+        const engineMaterializedDirs = [];
         // Reject a replaced ancestor before creating an attempt directory.
         let current = this.dataDir;
-        for (const segment of relative.split(path.sep)) {
-          current = path.join(current, segment);
+        const segments = relative.split(path.sep);
+        for (let idx = 0; idx < segments.length; idx++) {
+          current = path.join(current, segments[idx]);
           if (fs.existsSync(current) && fs.lstatSync(current).isSymbolicLink()) throw new Error('Workspace ancestor is a symbolic link');
-          if (current === cwd) { fs.mkdirSync(current); const info = fs.lstatSync(current); preparedWorkspace = { cwd, relative, dev: info.dev, ino: info.ino }; }
-          else fs.mkdirSync(current, { recursive: true });
+          if (idx === segments.length - 1) {
+            if (isWorktree) {
+              const gitDeps = this._collectTransitiveGitDependencies(task);
+              const wt = await prepareAttemptWorktree({
+                repoPath: team.repoPath,
+                baseCommit: team.baseCommit,
+                cwd,
+                dependencyPatches: gitDeps.dependencyPatches,
+                allowedBaseDir: path.join(this.dataDir, 'workspaces'),
+              });
+              attemptStartCommit = wt.attemptStartCommit;
+              appliedGitDependencies = wt.appliedDependencies;
+              preparedWorkspace = { cwd, relative, isWorktree: true, repoPath: team.repoPath };
+            } else {
+              fs.mkdirSync(current);
+              const info = fs.lstatSync(current);
+              preparedWorkspace = { cwd, relative, dev: info.dev, ino: info.ino, isWorktree: false };
+            }
+          } else {
+            fs.mkdirSync(current, { recursive: true });
+          }
+        }
+        if (isWorktree && sourceIds.length && await treeContainsTopLevelPath({ cwd, commit: attemptStartCommit, name: 'context-sources' })) {
+          throw new Error('Git repository already contains a tracked top-level "context-sources" directory; cannot materialize task context-sources');
+        }
+        if (isWorktree && dependencyContext.snapshots.length && await treeContainsTopLevelPath({ cwd, commit: attemptStartCommit, name: 'dependencies' })) {
+          throw new Error('Git repository already contains a tracked top-level "dependencies" directory; cannot materialize dependency evidence');
         }
         const contextManifest = sourceIds.length ? context.materializeSources(sourceIds, cwd) : null;
+        if (contextManifest) engineMaterializedDirs.push('context-sources');
         const dependencyManifest = await this._materializeDependencies(dependencyContext, cwd);
+        if (dependencyContext.snapshots.length) engineMaterializedDirs.push('dependencies');
         this._assertDependencyBindings(task, dependencyContext.versions);
         const packet = contextManifest ? context.buildPacket({ goal, requiredSections, sourceIds, budgetBytes: this.packetBudgetBytes, manifest: contextManifest }) : plannedPacket;
         task = this.store.get(task.id);
         if (this.closed || task.revision !== preparationRevision || !this._mayRun(task) || !['queued', 'blocked'].includes(task.state)) continue;
-        Object.assign(task, { state: 'dispatching', attemptId, cwd, ...(effectiveSessionId ? { sessionId: effectiveSessionId } : {}), threadId: null, turnId: null, ...selection, dependencyVersions: dependencyContext.versions, dependencyManifest, contextManifest, packetBytes: packet.bytes, packetRequiredBytes: packet.requiredBytes, budgetBreakdown: packet.budgetBreakdown, budgetDetails: null, error: null, runtimeError: null, executionUnresolved: true, verification: null, summary: null, resultFile: null, resultSha256: null, completionStatus: null, recovery: null, nextRetryAt: null, startedAt: now(), finishedAt: null, durationMs: null });
+        Object.assign(task, { state: 'dispatching', attemptId, cwd, ...(isWorktree ? { workspaceMode: 'git-worktree', attemptStartCommit, appliedGitDependencies, engineMaterializedDirs } : {}), ...(effectiveSessionId ? { sessionId: effectiveSessionId } : {}), threadId: null, turnId: null, ...selection, dependencyVersions: dependencyContext.versions, dependencyManifest, contextManifest, packetBytes: packet.bytes, packetRequiredBytes: packet.requiredBytes, budgetBreakdown: packet.budgetBreakdown, budgetDetails: null, error: null, runtimeError: null, executionUnresolved: true, verification: null, summary: null, resultFile: null, resultSha256: null, completionStatus: null, recovery: null, nextRetryAt: null, startedAt: now(), finishedAt: null, durationMs: null });
         if (native) Object.assign(task, { executionKind: 'native', nativeBindingId: native.binding.id, nativeBindingRevision: native.binding.revision,
           nativeThreadId: native.binding.threadId, nativeHostId: native.binding.hostId ?? 'local', nativeOriginThreadId: native.binding.originThreadId,
           nativeMarker: `[SUPERAGENT_NATIVE_TASK:${task.id}:${attemptId}]`, nativeAfterCursor: native.snapshot.cursor ?? null,
@@ -623,23 +697,30 @@ export class Engine extends EventEmitter {
         if (task.state !== 'blocked' || task.error !== error.message || task.blockReason !== 'preflight') {
           task.state = 'blocked'; task.blockReason = 'preflight'; task.error = error.message;
           task.budgetDetails = error.code === 'CONTEXT_BUDGET_EXCEEDED' ? Object.fromEntries(['code', 'budgetBytes', 'requiredBytes', 'overByBytes', 'budgetBreakdown'].map(key => [key, error[key]])) : null;
+          if (error.code === 'WORKTREE_DEPENDENCY_CONFLICT') {
+            task.conflictDependencyVersions = task.dependsOn.map(id => ({ id, snapshotId: this.store.get(id)?.acceptance?.snapshotId ?? null }));
+          }
           this._save(task, 'preflight-blocked');
         }
       } finally {
         if (preparedWorkspace && !preserveWorkspace && fs.existsSync(preparedWorkspace.cwd)) {
           try {
-            const expected = path.resolve(this.dataDir, preparedWorkspace.relative);
-            if (expected !== preparedWorkspace.cwd || path.relative(this.dataDir, expected) !== preparedWorkspace.relative) throw new Error('Unsafe prepared workspace cleanup path');
-            let current = this.dataDir;
-            for (const segment of preparedWorkspace.relative.split(path.sep)) {
-              current = path.join(current, segment);
-              const info = fs.lstatSync(current);
-              if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('Prepared workspace cleanup path was replaced');
+            if (preparedWorkspace.isWorktree) {
+              await removeAttemptWorktree({ repoPath: preparedWorkspace.repoPath, cwd: preparedWorkspace.cwd, allowedBaseDir: path.join(this.dataDir, 'workspaces') });
+            } else {
+              const expected = path.resolve(this.dataDir, preparedWorkspace.relative);
+              if (expected !== preparedWorkspace.cwd || path.relative(this.dataDir, expected) !== preparedWorkspace.relative) throw new Error('Unsafe prepared workspace cleanup path');
+              let current = this.dataDir;
+              for (const segment of preparedWorkspace.relative.split(path.sep)) {
+                current = path.join(current, segment);
+                const info = fs.lstatSync(current);
+                if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('Prepared workspace cleanup path was replaced');
+              }
+              if (fs.realpathSync(expected) !== expected) throw new Error('Prepared workspace cleanup path was linked');
+              const info = fs.lstatSync(expected);
+              if (info.dev !== preparedWorkspace.dev || info.ino !== preparedWorkspace.ino) throw new Error('Prepared workspace cleanup identity changed');
+              fs.rmSync(expected, { recursive: true });
             }
-            if (fs.realpathSync(expected) !== expected) throw new Error('Prepared workspace cleanup path was linked');
-            const info = fs.lstatSync(expected);
-            if (info.dev !== preparedWorkspace.dev || info.ino !== preparedWorkspace.ino) throw new Error('Prepared workspace cleanup identity changed');
-            fs.rmSync(expected, { recursive: true });
           } catch (error) { this.emit('diagnostic', { error: `Unused prepared workspace retained: ${error.message}` }); }
         }
       }
@@ -655,6 +736,126 @@ export class Engine extends EventEmitter {
     const preferences = ['low', 'easy'].includes(difficulty) ? ['low', 'minimal', 'medium', 'high', 'default'] : ['high', 'hard'].includes(difficulty) ? ['high', 'xhigh', 'medium', 'low', 'default'] : ['medium', 'low', 'high', 'minimal', 'default'];
     const effort = preferences.find(value => efforts.includes(value)) ?? efforts[0];
     return effort ? { model: model.model, effort, modelReason: model === light && ['low', 'easy'].includes(difficulty) ? 'Low difficulty: lightweight model explicitly present in host model list; supported effort selected' : 'Host default/first usable model; difficulty selects a supported reasoning effort' } : null;
+  }
+  _topoSortTasks(tasks) {
+    const byId = new Map(tasks.map(t => [t.id, t]));
+    const depthMemo = new Map();
+    const depthOf = (id, stack = new Set()) => {
+      if (depthMemo.has(id)) return depthMemo.get(id);
+      if (stack.has(id)) throw new Error(`Cyclic task dependency detected at ${id}`);
+      const item = byId.get(id);
+      if (!item) return 0;
+      stack.add(id);
+      let d = 0;
+      for (const dep of item.dependsOn ?? []) {
+        if (byId.has(dep)) d = Math.max(d, depthOf(dep, stack) + 1);
+      }
+      stack.delete(id);
+      depthMemo.set(id, d);
+      return d;
+    };
+    return [...tasks].sort((a, b) => {
+      const da = depthOf(a.id), db = depthOf(b.id);
+      if (da !== db) return da - db;
+      const ca = String(a.createdAt ?? ''), cb = String(b.createdAt ?? '');
+      if (ca !== cb) return ca.localeCompare(cb);
+      return String(a.id).localeCompare(String(b.id));
+    });
+  }
+  _collectTransitiveGitDependencies(task) {
+    const ancestors = new Map();
+    const queue = [...(task.dependsOn ?? [])];
+    while (queue.length) {
+      const id = queue.shift();
+      if (ancestors.has(id)) continue;
+      const parent = this.store.get(id);
+      if (!parent || parent.state !== 'accepted') throw new Error(`Git worktree dependency is not accepted: ${id}`);
+      if (parent.teamId !== task.teamId) throw new Error('Dependency team scope changed');
+      if (!parent.acceptance?.snapshotId) throw new Error(`Accepted dependency requires frozen snapshot before use: ${id}`);
+      if (!parent.acceptance?.git?.patchFile || !parent.acceptance?.git?.patchSha256) {
+        throw new Error(`Accepted dependency is missing frozen git patch metadata: ${id}`);
+      }
+      ancestors.set(id, parent);
+      for (const grandParentId of parent.dependsOn ?? []) {
+        if (!ancestors.has(grandParentId)) queue.push(grandParentId);
+      }
+    }
+    const ordered = this._topoSortTasks([...ancestors.values()]);
+    // Enforce snapshot version consistency across diamond dependency edges.
+    for (const parent of ordered) {
+      for (const depVer of parent.acceptance?.dependencyVersions ?? []) {
+        const ancestor = ancestors.get(depVer.id);
+        if (ancestor && ancestor.acceptance?.snapshotId !== depVer.snapshotId) {
+          throw Object.assign(
+            new Error(`Diamond dependency snapshot version mismatch for ${depVer.id}: task ${parent.id} was accepted against ${depVer.snapshotId}, but current accepted snapshot is ${ancestor.acceptance?.snapshotId}`),
+            { code: 'WORKTREE_DEPENDENCY_CONFLICT' },
+          );
+        }
+      }
+    }
+    const seen = new Set();
+    const dependencyPatches = [];
+    for (const parent of ordered) {
+      const key = `${parent.id}:${parent.acceptance.snapshotId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const patchBytes = readVerifiedGitPatch({
+        dataDir: this.dataDir,
+        patchFile: parent.acceptance.git.patchFile,
+        patchSha256: parent.acceptance.git.patchSha256,
+      });
+      dependencyPatches.push({
+        taskId: parent.id,
+        snapshotId: parent.acceptance.snapshotId,
+        patchSha256: parent.acceptance.git.patchSha256,
+        patchBytes,
+      });
+    }
+    return { orderedDeps: ordered, dependencyPatches };
+  }
+  async mergeTeam(teamId, { apply = false, branchName = null, integrationCheck = null } = {}) {
+    const team = this._team(teamId);
+    if (team.workspaceMode !== 'git-worktree' || !team.repoPath || !team.baseCommit) {
+      throw new Error('merge_preview and merge_apply are only available for workspaceMode="git-worktree" teams');
+    }
+    if (integrationCheck !== undefined && integrationCheck !== null) {
+      validateCheck(integrationCheck);
+      if (!isBehavioralCheck(integrationCheck)) {
+        throw new Error('integrationCheck must be a behavioral command_test or node_test');
+      }
+    }
+    const rawTasks = this.store.teamTasks(team.id);
+    const accepted = this._topoSortTasks(rawTasks.filter(t => t.state === 'accepted'));
+    const unaccepted = rawTasks.filter(t => t.state !== 'accepted').map(t => ({ taskId: t.id, title: t.title, state: t.state, executionUnresolved: Boolean(t.executionUnresolved) }));
+    if (!accepted.length) throw new Error('No accepted git-worktree tasks are ready to merge');
+    const evidenceDir = path.join(this.dataDir, 'merge-evidence', team.id);
+    fs.mkdirSync(evidenceDir, { recursive: true });
+    const result = await runTeamMerge({
+      repoPath: team.repoPath,
+      baseCommit: team.baseCommit,
+      teamId: team.id,
+      orderedAcceptedTasks: accepted,
+      dataDir: this.dataDir,
+      integrationCheck: integrationCheck ?? null,
+      sourceStore: integrationCheck?.type === 'node_test' && integrationCheck.sourceId ? this.contextForTeam(team.id) : null,
+      evidenceDir,
+      apply: apply === true,
+      branchName: branchName ?? null,
+      runIntegrationCheck: runStandaloneCheck,
+    });
+    if (apply === true && result.ok === true) {
+      const freshTeam = this._team(team.id);
+      freshTeam.lastMerge = {
+        at: now(),
+        branch: result.branch,
+        ref: result.ref,
+        mergedCommit: result.mergedCommit,
+        baseCommit: result.baseCommit,
+        taskIds: result.appliedTasks.map(t => t.taskId),
+      };
+      this._saveTeam(freshTeam, 'team-merged');
+    }
+    return { ...result, unacceptedTaskCount: unaccepted.length, unacceptedTasks: unaccepted };
   }
   async _dependencyContext(task) {
     const versions = [], sourceIds = [], manifests = [], snapshots = [];
@@ -898,7 +1099,14 @@ export class Engine extends EventEmitter {
   }
   async _verify(task) {
     if (this.verifying.has(task.id)) throw new Error('Task verification is already running');
-    const pending = verifyArtifacts({ task, sourceStore: this._contextForTask(task), evidenceDir: task.checks.some(check => check.type === 'node_test') ? this._attemptMetadata(task.id, task.attemptId) : null });
+    const needsEvidence = task.checks.some(isBehavioralCheck) || task.workspaceMode === 'git-worktree';
+    const pending = verifyArtifacts({
+      task,
+      sourceStore: this._contextForTask(task),
+      evidenceDir: needsEvidence ? this._attemptMetadata(task.id, task.attemptId) : null,
+      dataDir: this.dataDir,
+      excludeEngineDirs: task.engineMaterializedDirs ?? [],
+    });
     this.verifying.set(task.id, pending);
     try { return await pending; } finally { this.verifying.delete(task.id); }
   }
@@ -937,15 +1145,45 @@ export class Engine extends EventEmitter {
     if (task.completionStatus === 'failed' && !acknowledgeHostFailure) throw new Error('Failed host completion requires acknowledgeHostFailure: true and a reason');
     if (task.completionStatus === 'failed' && !reason) throw new Error('Failed host completion acceptance requires a reason');
     let verification, snapshot;
+    const isWorktree = task.workspaceMode === 'git-worktree';
+    const team = task.teamId ? this._team(task.teamId) : null;
     try {
       await this._assertDependencyVersions(task);
       await this._assertResultVersion(task);
-      if (JSON.stringify(await artifactFiles(task)) !== JSON.stringify(task.verification?.files ?? [])) throw new Error('Artifact hashes changed after verification');
-      verification = await this._verify(task);
-      if (JSON.stringify(verification.files) !== JSON.stringify(task.verification?.files ?? [])) throw new Error('Artifact hashes changed after verification');
-      if (JSON.stringify(await artifactFiles(task)) !== JSON.stringify(verification.files)) throw new Error('Artifact hashes changed during acceptance');
-      await this._assertResultVersion(task);
-      snapshot = await this._freezeTask(task, verification.files);
+      if (isWorktree) {
+        verification = await this._verify(task);
+        const prevGit = task.verification?.git;
+        const nextGit = verification.git;
+        if (!prevGit?.candidateTree || nextGit?.candidateTree !== prevGit.candidateTree || nextGit?.attemptStartCommit !== prevGit.attemptStartCommit || nextGit?.patchSha256 !== prevGit.patchSha256) {
+          throw new Error('Artifact hashes changed after verification');
+        }
+        if (JSON.stringify(verification.files) !== JSON.stringify(task.verification?.files ?? [])) {
+          throw new Error('Artifact hashes changed after verification');
+        }
+        await this._assertResultVersion(task);
+        const freezeExportDir = path.join(this._attemptMetadata(task.id, task.attemptId), `freeze-export-${randomUUID()}`);
+        try {
+          await exportCandidateForTesting({ cwd: task.cwd, candidateCommit: verification.git.candidateCommit, destDir: freezeExportDir });
+          snapshot = await freezeSnapshot({
+            root: path.join(this.dataDir, 'artifact-snapshots'),
+            cwd: freezeExportDir,
+            resultFile: task.resultFile ? secureFile(this.dataDir, task.resultFile) : null,
+            resultSha256: task.resultSha256,
+            files: [...new Map(verification.files.map(file => [file.path, file])).values()],
+          });
+        } finally {
+          if (fs.existsSync(freezeExportDir)) {
+            try { fs.rmSync(freezeExportDir, { recursive: true, force: true }); } catch {}
+          }
+        }
+      } else {
+        if (JSON.stringify(await artifactFiles(task)) !== JSON.stringify(task.verification?.files ?? [])) throw new Error('Artifact hashes changed after verification');
+        verification = await this._verify(task);
+        if (JSON.stringify(verification.files) !== JSON.stringify(task.verification?.files ?? [])) throw new Error('Artifact hashes changed after verification');
+        if (JSON.stringify(await artifactFiles(task)) !== JSON.stringify(verification.files)) throw new Error('Artifact hashes changed during acceptance');
+        await this._assertResultVersion(task);
+        snapshot = await this._freezeTask(task, verification.files);
+      }
       await this._assertDependencyVersions(task);
       await this._assertResultVersion(task);
     } catch (error) { this._verificationFailure(task, error); throw error; }
@@ -954,10 +1192,18 @@ export class Engine extends EventEmitter {
     task.acceptance = { at: now(), kind: actor === 'engine:auto-verified' ? 'auto-verified-acceptance' : 'explicit-caller-acceptance', independentQualityGuarantee: false,
       actor, actorAssurance: 'caller-reported', reason, acknowledgeHostFailure, expectedRevision: expectedRevision ?? null, observedRevision: task.revision,
       versionPinned: expectedRevision !== undefined, snapshotId: snapshot.id,
+      ...(isWorktree && verification.git ? { git: { ...clone(verification.git), repoPath: team?.repoPath ?? null, baseCommit: team?.baseCommit ?? null } } : {}),
       hostCompletionStatus: task.completionStatus ?? null, attemptId: task.attemptId, resultFile: task.resultFile ?? null, resultSha256: task.resultSha256 ?? null,
       artifacts: clone(verification.files), checks: clone(verification.checks), checkDefinitions: clone(task.checks), verifiedAt: verification.at,
       dependencyVersions: clone(task.dependencyVersions ?? []) };
-    const value = this._save(task, 'accepted'); this.runDue().catch(() => {}); return value;
+    const worktreeToClean = isWorktree && team?.repoPath && task.cwd ? { repoPath: team.repoPath, cwd: task.cwd } : null;
+    const value = this._save(task, 'accepted');
+    if (worktreeToClean) {
+      await removeAttemptWorktree({ ...worktreeToClean, allowedBaseDir: path.join(this.dataDir, 'workspaces') }).catch(err => {
+        this.emit('diagnostic', { taskId: task.id, error: `Worktree cleanup warning after acceptance: ${err.message}` });
+      });
+    }
+    this.runDue().catch(() => {}); return value;
   }
   async acceptAllChecked(teamId, { actor = 'local-http:unidentified' } = {}) {
     const team = this._team(teamId);
@@ -1081,7 +1327,7 @@ export class Engine extends EventEmitter {
     if (task.teamId && this._team(task.teamId).control !== 'run') throw new Error('Team must be running before retry');
     if (task.executionUnresolved || executing.has(task.state)) throw new Error('Cannot retry an unresolved execution');
     if (!['failed', 'cancelled', 'blocked'].includes(task.state)) throw new Error('Task is not eligible for explicit retry');
-    task.control = 'run'; task.state = 'queued'; task.error = null; task.runtimeError = null; task.retryCount = 0; task.nextRetryAt = null;
+    task.control = 'run'; task.state = 'queued'; task.error = null; task.runtimeError = null; task.retryCount = 0; task.nextRetryAt = null; delete task.conflictDependencyVersions;
     return this._save(task, 'explicit-retry');
   }
   rework(id, options = {}) {
@@ -1113,7 +1359,7 @@ export class Engine extends EventEmitter {
     task.control = task.teamId && this._team(task.teamId).control === 'pause' ? 'pause' : 'run';
     task.state = task.control === 'pause' ? 'paused' : 'queued';
     if (task.control === 'pause' && task.teamId) task.teamPauseOrigin = { teamId: task.teamId, priorControl: 'run' };
-    task.error = null; task.runtimeError = null; task.verification = null;
+    task.error = null; task.runtimeError = null; task.verification = null; delete task.conflictDependencyVersions; delete task.autoAcceptBlockedReason;
     this.liveActivity.delete(task.id);
     const saved = this._save(task, 'rework-requested', { reworkCount: task.reworkCount, actor });
     if (task.control === 'run') this.runDue().catch(() => {});

@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.17.0-dsh.1 (SuperAgent `1.22.0-dsh.1` / Super Teams `0.14.0-dsh.1`)
+
+- **Hardened `git-worktree` Collaboration Mode (`workspaceMode: "git-worktree"`)**:
+  - Teams can now target a real local Git repository via `workspaceMode: "git-worktree"` + `repoPath`, pinning `baseCommit` at team creation while keeping every task attempt in an isolated detached Git worktree.
+  - **Transitive Diamond-DAG Incremental Patch Replay**: Dependent tasks compute the transitive ancestor closure, deduplicate by `(taskId, snapshotId)`, sort topologically, and replay each accepted ancestor's verified incremental `changes.patch` cleanly (failing preflight with conflicting `taskId`/`snapshotId` references on patch conflict).
+  - **Two-Tree Diff `writeScopes` Certification**: Candidates are sealed via an isolated temporary `GIT_INDEX_FILE` into an immutable `candidateCommit` and audited by `git diff --raw --find-renames -z <attemptStartCommit> <candidateCommit>` (catching detached-HEAD commits, rename old/new paths, deletions, mode `120000`/`160000`, symlinks, and Windows directory junctions).
+  - **Isolated `.git`-Free Test & Freeze Execution**: Behavioral verification and snapshot freezing operate on a clean exported copy of `candidateCommit` with no `.git` metadata and full process-tree cleanup on timeout/exit.
+  - **Safe `merge_preview` & Atomic Create-Only `merge_apply`**: Replays all accepted task patches in topological order inside a temporary detached staging worktree, runs optional behavioral `integrationCheck` on an exported `.git`-free tree, and atomically publishes `refs/heads/superagent/<slug>` via `git update-ref <ref> <oid> 0000...0000` without touching the user's active working tree or existing branches.
+- **Polyglot Structured `command_test` Acceptance Gate**:
+  - Added `command_test` as a polyglot behavioral check reaching `checked` state (requiring explicit `accept` / `accept_checked` review, while `autoAccept: true` remains strictly bound to immutable `ContextStore`-frozen `node_test` scripts to prevent transitive test-helper tampering), supporting structured local test runners (`node --test`, `pytest`, `python/python3 -m pytest|unittest`, `cargo test`, `go test`, `dotnet test`, `npm test` / `npm run test[:*]`).
+  - Explicitly forbids `npx`, inline eval/preload flags (`-e`, `--eval`, `-p`, `-r`, `--require`, `python -c`, `go test -exec`, `cargo --config`, `npm --script-shell`), parent-directory traversal, host absolute paths, and zero-test false positives (`# tests 0` / `Ran 0 tests`).
+- **Delivery Handoff Enhancement**:
+  - `delivery.zip` exports now include SHA-256 verified `artifacts/<taskId>/changes.patch` and a sanitized `HANDOFF.md` integration checklist for `git-worktree` teams.
+
 ## v0.16.1-dsh.1 (SuperAgent `1.21.1-dsh.1` / Super Teams `0.13.1-dsh.1`)
 
 - **Reconciliation & Lifecycle Hardening**:

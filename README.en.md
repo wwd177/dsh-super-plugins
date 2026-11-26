@@ -12,8 +12,8 @@ Runs directly inside the DeepSeek Harness Cordis host process — **zero externa
 
 | Component | Package & Version | Role |
 | --- | --- | --- |
-| **SuperAgent Workflow & Delivery** | `@local/dsh-superagent-menu` (`1.21.1-dsh.1`) | Task decomposition, evidence-based routing, behavioral verification gates, and final integration methodology; includes `superagent-workflow`, `workflow-quality`, and `development-handoff` skills plus `+` menu actions |
-| **Super Teams Persistent Engine** | `@local/dsh-super-teams` (`0.13.1-dsh.1`) | Unified SQLite WAL critical-path DAG engine (`0.16.1-dsh.1`), 8 native tools, adaptive right-sidebar Team Workbench, and the `super-teams` skill |
+| **SuperAgent Workflow & Delivery** | `@local/dsh-superagent-menu` (`1.22.0-dsh.1`) | Task decomposition, evidence-based routing, polyglot behavioral verification gates, and Git worktree integration methodology; includes `superagent-workflow`, `workflow-quality`, and `development-handoff` skills plus `+` menu actions |
+| **Super Teams Persistent Engine** | `@local/dsh-super-teams` (`0.14.0-dsh.1`) | Unified SQLite WAL critical-path DAG engine (`0.17.0-dsh.1`), hardened `git-worktree` mode with atomic branch merge, polyglot `command_test` gate, 8 native tools, adaptive right-sidebar Team Workbench, and the `super-teams` skill |
 | **AI Agent Installer Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.0.1`) | Dedicated skill allowing any AI coding agent (DeepSeek Harness, Claude Code, Codex, Cursor, Windsurf, Antigravity, etc.) to safely install, verify, or uninstall both plugins |
 
 ---

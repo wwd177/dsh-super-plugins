@@ -12,8 +12,8 @@
 
 | 组件 | 包名与版本 | 核心职责 |
 | --- | --- | --- |
-| **SuperAgent 协作与交付** | `@local/dsh-superagent-menu` (`1.21.1-dsh.1`) | 复杂任务拆解、证据选路、行为测试门禁设计与最终集成方法论；内置 `superagent-workflow`、`workflow-quality`、`development-handoff` 3 套技能与聊天「＋」快捷菜单 |
-| **Super Teams 持久编排引擎** | `@local/dsh-super-teams` (`0.13.1-dsh.1`) | 内置 SQLite WAL 持久关键路径 DAG 编排引擎 (`0.16.1-dsh.1`)、8 个统一原生工具、双右侧栏自适应「团队工作台」与 `super-teams` 技能 |
+| **SuperAgent 协作与交付** | `@local/dsh-superagent-menu` (`1.22.0-dsh.1`) | 复杂任务拆解、证据选路、多语言行为测试门禁与 Git Worktree 集成方法论；内置 `superagent-workflow`、`workflow-quality`、`development-handoff` 3 套技能与聊天「＋」快捷菜单 |
+| **Super Teams 持久编排引擎** | `@local/dsh-super-teams` (`0.14.0-dsh.1`) | 内置 SQLite WAL 持久关键路径 DAG 编排引擎 (`0.17.0-dsh.1`)、Git Worktree 模式与原子分支合并、`command_test` 多语言门禁、8 个统一原生工具、自适应右侧「团队工作台」与 `super-teams` 技能 |
 | **AI 智能体专用安装 Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.0.1`) | 供其他 AI 智能体（DeepSeek Harness / Claude Code / Codex / Cursor / Antigravity 等）自动完成全平台检测、备份、自包含安装与哈希校验 |
 
 ---

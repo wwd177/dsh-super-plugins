@@ -311,6 +311,8 @@ export function createDshEngineRouter({
           id: team.id,
           name: team.name,
           control: team.control,
+          workspaceMode: team.workspaceMode ?? 'isolated',
+          ...(team.baseCommit ? { baseCommit: team.baseCommit } : {}),
           sessionId: team.sessionId ?? null,
           members: team.members.map(({ id, name, role }) => ({ id, name, role })),
           planTasks: team.planTasks,
@@ -343,6 +345,12 @@ export function createDshEngineRouter({
         if (req.method === 'GET' && parts[3] === 'graph' && parts.length === 4) return send(200, await engine.getTeamGraph(teamId));
         if (req.method === 'POST' && parts[3] === 'accept-checked' && parts.length === 4) {
           return send(200, await engine.acceptAllChecked(teamId, { actor: input?.actor ?? 'dsh-workbench:user' }));
+        }
+        if (req.method === 'POST' && parts[3] === 'merge-preview' && parts.length === 4) {
+          return send(200, await engine.mergeTeam(teamId, { apply: false, integrationCheck: input?.integrationCheck ?? null }));
+        }
+        if (req.method === 'POST' && parts[3] === 'merge-apply' && parts.length === 4) {
+          return send(200, await engine.mergeTeam(teamId, { apply: true, branchName: input?.branchName ?? null, integrationCheck: input?.integrationCheck ?? null }));
         }
         if (req.method === 'POST' && parts[3] === 'session' && parts.length === 4) {
           return send(200, engine.bindTeamSession(teamId, input.sessionId));

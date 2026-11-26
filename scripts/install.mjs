@@ -11,10 +11,10 @@ const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
 
 const PLUGIN_NAMES = ['@local/dsh-superagent-menu', '@local/dsh-super-teams'];
 const SKILL_ENTRIES = [
-  { name: 'superagent-workflow', package: 'superagent', version: '1.21.1-dsh.1' },
-  { name: 'workflow-quality', package: 'superagent', version: '1.21.1-dsh.1' },
-  { name: 'development-handoff', package: 'superagent', version: '1.21.1-dsh.1' },
-  { name: 'super-teams', package: 'super-teams', version: '0.13.1-dsh.1' },
+  { name: 'superagent-workflow', package: 'superagent', version: '1.22.0-dsh.1' },
+  { name: 'workflow-quality', package: 'superagent', version: '1.22.0-dsh.1' },
+  { name: 'development-handoff', package: 'superagent', version: '1.22.0-dsh.1' },
+  { name: 'super-teams', package: 'super-teams', version: '0.14.0-dsh.1' },
 ];
 
 function parseArgs(argv) {
@@ -435,9 +435,9 @@ function performInstall(opts) {
       path.join(stageRoot, 'skill-lock.json'),
       JSON.stringify({
         generatedAt: new Date().toISOString(),
-        engineVersion: '0.16.1-dsh.1',
-        superagentVersion: '1.21.1-dsh.1',
-        superTeamsVersion: '0.13.1-dsh.1',
+        engineVersion: '0.17.0-dsh.1',
+        superagentVersion: '1.22.0-dsh.1',
+        superTeamsVersion: '0.14.0-dsh.1',
         skills: skillLocks,
       }, null, 2) + '\n',
       'utf8'
@@ -488,9 +488,9 @@ function performInstall(opts) {
     profile,
     backup: backupRoot,
     versions: {
-      engine: '0.16.1-dsh.1',
-      superagent: '1.21.1-dsh.1',
-      superTeams: '0.13.1-dsh.1',
+      engine: '0.17.0-dsh.1',
+      superagent: '1.22.0-dsh.1',
+      superTeams: '0.14.0-dsh.1',
     },
     plugins: verification.plugins,
     skills: verification.skills,
@@ -549,7 +549,7 @@ if (isMain) {
     } else if (opts.mode === 'uninstall') {
       console.log(`[OK] Uninstalled SuperAgent + Super Teams from ${result.dshHome} (profile: ${result.profile}). Restart DeepSeek Harness to apply.`);
     } else {
-      console.log(`[OK] Installed SuperAgent 1.21.1-dsh.1 + Super Teams 0.13.1-dsh.1 (Engine 0.16.1-dsh.1) into ${result.dshHome} (profile: ${result.profile}).`);
+      console.log(`[OK] Installed SuperAgent 1.22.0-dsh.1 + Super Teams 0.14.0-dsh.1 (Engine 0.17.0-dsh.1) into ${result.dshHome} (profile: ${result.profile}).`);
       console.log(`     Backup saved to: ${result.backup}`);
       console.log(`     Please restart DeepSeek Harness once to load the updated plugins and Team Workbench.`);
     }

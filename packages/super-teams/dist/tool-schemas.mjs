@@ -4,7 +4,6 @@ var __export = (target, all) => {
     __defProp(target, name, { get: all[name], enumerable: true });
 };
 
-// [bundled dependency]
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES,
@@ -762,7 +761,6 @@ function own(inst, key, value, enumerable = true) {
 function hide(inst, key, value) {
   return own(inst, key, value, false);
 }
-// @__NO_SIDE_EFFECTS__
 function derived(computes, table) {
   for (const key in computes) {
     const compute = computes[key];
@@ -860,7 +858,6 @@ function constantCatch(value) {
   return fn;
 }
 
-// [bundled dependency]
 var _a;
 var _zodDesc = { value: void 0, enumerable: false };
 var _E = "captureStackTrace" in Error ? Error : null;
@@ -884,7 +881,6 @@ function newError(Definition) {
   }
   return new Definition();
 }
-// @__NO_SIDE_EFFECTS__
 function $constructor(name, initializer3, proto, params) {
   const zodProto = {};
   function Internals(def) {
@@ -978,7 +974,6 @@ function config(newConfig) {
   return globalConfig;
 }
 
-// [bundled dependency]
 function _getMessage() {
   const internals = this._zod;
   internals.message ?? (internals.message = JSON.stringify(internals.def, jsonStringifyReplacer, 2));
@@ -1093,7 +1088,6 @@ function formatError(error2, mapper = (issue2) => issue2.message) {
   return fieldErrors;
 }
 
-// [bundled dependency]
 function finalizeParams(callee, params) {
   return { callee: params?.callee ?? callee, Err: params?.Err };
 }
@@ -1241,7 +1235,6 @@ var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
   return _safeParseAsync(_Err)(schema, value, _ctx);
 };
 
-// [bundled dependency]
 var cuid = /^[cC][0-9a-z]{6,}$/;
 var cuid2 = /^[0-9a-z]+$/;
 var ulid = /^[0-7][0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{25}$/;
@@ -1299,7 +1292,6 @@ var boolean = /^(?:true|false)$/i;
 var lowercase = /^[^A-Z]*$/;
 var uppercase = /^[^a-z]*$/;
 
-// [bundled dependency]
 var $ZodCheck = /* @__PURE__ */ $constructor("$ZodCheck", (inst, def) => {
   var _a3;
   inst._zod ?? (inst._zod = {});
@@ -1619,7 +1611,6 @@ var $ZodCheckOverwrite = /* @__PURE__ */ $constructor("$ZodCheckOverwrite", (ins
   };
 });
 
-// [bundled dependency]
 var Doc = class {
   constructor(args = [], closed = {}) {
     this.content = [];
@@ -1660,14 +1651,12 @@ ${content.join("\n")}
   }
 };
 
-// [bundled dependency]
 var version = {
   major: 4,
   minor: 6,
   patch: 7
 };
 
-// [bundled dependency]
 var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
   var _a3;
   inst ?? (inst = {});
@@ -3054,7 +3043,6 @@ function handleRefineResult(result, payload, input, inst) {
   }
 }
 
-// [bundled dependency]
 var $ZodCyclicError = class extends Error {
   constructor() {
     super(`Cannot parse a reference cycle that closes through a transform`);
@@ -3328,7 +3316,6 @@ function isBackEdge(ctx, value) {
   return backEdges !== void 0 && isRef(value) && backEdges.has(value);
 }
 
-// [bundled dependency]
 var error = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -3453,7 +3440,6 @@ function en_default() {
   };
 }
 
-// [bundled dependency]
 var _a2;
 var $ZodRegistry = class {
   constructor() {
@@ -3501,17 +3487,14 @@ function registry() {
 (_a2 = globalThis).__zod_globalRegistry ?? (_a2.__zod_globalRegistry = registry());
 var globalRegistry = globalThis.__zod_globalRegistry;
 
-// [bundled dependency]
 function snapshotChecks(def) {
   if (def.checks)
     def.checks = [...def.checks];
   return def;
 }
-// @__NO_SIDE_EFFECTS__
 function _string(Class2, params) {
   return new Class2(snapshotChecks({ type: "string", ...normalizeParams(params) }));
 }
-// @__NO_SIDE_EFFECTS__
 function _email(Class2, params) {
   return new Class2({
     type: "string",
@@ -3521,7 +3504,6 @@ function _email(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _guid(Class2, params) {
   return new Class2({
     type: "string",
@@ -3531,7 +3513,6 @@ function _guid(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _uuid(Class2, params) {
   return new Class2({
     type: "string",
@@ -3541,7 +3522,6 @@ function _uuid(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _uuidv4(Class2, params) {
   return new Class2({
     type: "string",
@@ -3552,7 +3532,6 @@ function _uuidv4(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _uuidv6(Class2, params) {
   return new Class2({
     type: "string",
@@ -3563,7 +3542,6 @@ function _uuidv6(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _uuidv7(Class2, params) {
   return new Class2({
     type: "string",
@@ -3574,7 +3552,6 @@ function _uuidv7(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _url(Class2, params) {
   return new Class2({
     type: "string",
@@ -3584,7 +3561,6 @@ function _url(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _emoji2(Class2, params) {
   return new Class2({
     type: "string",
@@ -3594,7 +3570,6 @@ function _emoji2(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _nanoid(Class2, params) {
   return new Class2({
     type: "string",
@@ -3604,7 +3579,6 @@ function _nanoid(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _cuid(Class2, params) {
   return new Class2({
     type: "string",
@@ -3614,7 +3588,6 @@ function _cuid(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _cuid2(Class2, params) {
   return new Class2({
     type: "string",
@@ -3624,7 +3597,6 @@ function _cuid2(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _ulid(Class2, params) {
   return new Class2({
     type: "string",
@@ -3634,7 +3606,6 @@ function _ulid(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _xid(Class2, params) {
   return new Class2({
     type: "string",
@@ -3644,7 +3615,6 @@ function _xid(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _ksuid(Class2, params) {
   return new Class2({
     type: "string",
@@ -3654,7 +3624,6 @@ function _ksuid(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _ipv4(Class2, params) {
   return new Class2({
     type: "string",
@@ -3664,7 +3633,6 @@ function _ipv4(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _ipv6(Class2, params) {
   return new Class2({
     type: "string",
@@ -3674,7 +3642,6 @@ function _ipv6(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _cidrv4(Class2, params) {
   return new Class2({
     type: "string",
@@ -3684,7 +3651,6 @@ function _cidrv4(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _cidrv6(Class2, params) {
   return new Class2({
     type: "string",
@@ -3694,7 +3660,6 @@ function _cidrv6(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _base64(Class2, params) {
   return new Class2({
     type: "string",
@@ -3704,7 +3669,6 @@ function _base64(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _base64url(Class2, params) {
   return new Class2({
     type: "string",
@@ -3714,7 +3678,6 @@ function _base64url(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _e164(Class2, params) {
   return new Class2({
     type: "string",
@@ -3724,7 +3687,6 @@ function _e164(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _jwt(Class2, params) {
   return new Class2({
     type: "string",
@@ -3734,7 +3696,6 @@ function _jwt(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _isoDateTime(Class2, params) {
   return new Class2({
     type: "string",
@@ -3746,7 +3707,6 @@ function _isoDateTime(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _isoDate(Class2, params) {
   return new Class2({
     type: "string",
@@ -3755,7 +3715,6 @@ function _isoDate(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _isoTime(Class2, params) {
   return new Class2({
     type: "string",
@@ -3765,7 +3724,6 @@ function _isoTime(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _isoDuration(Class2, params) {
   return new Class2({
     type: "string",
@@ -3774,11 +3732,9 @@ function _isoDuration(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _number(Class2, params) {
   return new Class2(snapshotChecks({ type: "number", checks: [], ...normalizeParams(params) }));
 }
-// @__NO_SIDE_EFFECTS__
 function _int(Class2, params) {
   return new Class2({
     type: "number",
@@ -3788,27 +3744,23 @@ function _int(Class2, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _boolean(Class2, params) {
   return new Class2({
     type: "boolean",
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _unknown(Class2) {
   return new Class2({
     type: "unknown"
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _never(Class2, params) {
   return new Class2({
     type: "never",
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _lt(value, params) {
   return new $ZodCheckLessThan({
     check: "less_than",
@@ -3817,7 +3769,6 @@ function _lt(value, params) {
     inclusive: false
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _lte(value, params) {
   return new $ZodCheckLessThan({
     check: "less_than",
@@ -3826,7 +3777,6 @@ function _lte(value, params) {
     inclusive: true
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _gt(value, params) {
   return new $ZodCheckGreaterThan({
     check: "greater_than",
@@ -3835,7 +3785,6 @@ function _gt(value, params) {
     inclusive: false
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _gte(value, params) {
   return new $ZodCheckGreaterThan({
     check: "greater_than",
@@ -3844,7 +3793,6 @@ function _gte(value, params) {
     inclusive: true
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _multipleOf(value, params) {
   return new $ZodCheckMultipleOf({
     check: "multiple_of",
@@ -3852,7 +3800,6 @@ function _multipleOf(value, params) {
     value
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _maxLength(maximum, params) {
   const ch = new $ZodCheckMaxLength({
     check: "max_length",
@@ -3861,7 +3808,6 @@ function _maxLength(maximum, params) {
   });
   return ch;
 }
-// @__NO_SIDE_EFFECTS__
 function _minLength(minimum, params) {
   return new $ZodCheckMinLength({
     check: "min_length",
@@ -3869,7 +3815,6 @@ function _minLength(minimum, params) {
     minimum
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _length(length, params) {
   return new $ZodCheckLengthEquals({
     check: "length_equals",
@@ -3877,7 +3822,6 @@ function _length(length, params) {
     length
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _regex(pattern, params) {
   return new $ZodCheckRegex({
     check: "string_format",
@@ -3886,7 +3830,6 @@ function _regex(pattern, params) {
     pattern
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _lowercase(params) {
   return new $ZodCheckLowerCase({
     check: "string_format",
@@ -3894,7 +3837,6 @@ function _lowercase(params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _uppercase(params) {
   return new $ZodCheckUpperCase({
     check: "string_format",
@@ -3902,7 +3844,6 @@ function _uppercase(params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _includes(includes, params) {
   return new $ZodCheckIncludes({
     check: "string_format",
@@ -3911,7 +3852,6 @@ function _includes(includes, params) {
     includes
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _startsWith(prefix, params) {
   return new $ZodCheckStartsWith({
     check: "string_format",
@@ -3920,7 +3860,6 @@ function _startsWith(prefix, params) {
     prefix
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _endsWith(suffix, params) {
   return new $ZodCheckEndsWith({
     check: "string_format",
@@ -3929,34 +3868,27 @@ function _endsWith(suffix, params) {
     suffix
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _overwrite(tx) {
   return new $ZodCheckOverwrite({
     check: "overwrite",
     tx
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _normalize(form) {
   return /* @__PURE__ */ _overwrite((input) => input.normalize(form));
 }
-// @__NO_SIDE_EFFECTS__
 function _trim() {
   return /* @__PURE__ */ _overwrite((input) => input.trim());
 }
-// @__NO_SIDE_EFFECTS__
 function _toLowerCase() {
   return /* @__PURE__ */ _overwrite((input) => input.toLowerCase());
 }
-// @__NO_SIDE_EFFECTS__
 function _toUpperCase() {
   return /* @__PURE__ */ _overwrite((input) => input.toUpperCase());
 }
-// @__NO_SIDE_EFFECTS__
 function _slugify() {
   return /* @__PURE__ */ _overwrite((input) => slugify(input));
 }
-// @__NO_SIDE_EFFECTS__
 function _array(Class2, element, params) {
   return new Class2({
     type: "array",
@@ -3967,7 +3899,6 @@ function _array(Class2, element, params) {
     ...normalizeParams(params)
   });
 }
-// @__NO_SIDE_EFFECTS__
 function _refine(Class2, fn, _params) {
   const schema = new Class2({
     type: "custom",
@@ -3977,7 +3908,6 @@ function _refine(Class2, fn, _params) {
   });
   return schema;
 }
-// @__NO_SIDE_EFFECTS__
 function _superRefine(fn, params) {
   const ch = /* @__PURE__ */ _check((payload) => {
     payload.addIssue = (issue2) => {
@@ -3999,7 +3929,6 @@ function _superRefine(fn, params) {
   }, params);
   return ch;
 }
-// @__NO_SIDE_EFFECTS__
 function _check(fn, params) {
   const ch = new $ZodCheck({
     check: "custom",
@@ -4009,7 +3938,6 @@ function _check(fn, params) {
   return ch;
 }
 
-// [bundled dependency]
 function assignProps(target, ...sources) {
   for (const source of sources) {
     for (const key of Reflect.ownKeys(source)) {
@@ -4539,7 +4467,6 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
   return finalize(ctx, schema);
 };
 
-// [bundled dependency]
 var narrowMin = (agg, key, value) => {
   if (agg[key] === void 0 || value > agg[key])
     agg[key] = value;
@@ -5287,7 +5214,6 @@ function toJSONSchema(input, params) {
   return finalize(ctx, input);
 }
 
-// [bundled dependency]
 var _installedErrorProtos = /* @__PURE__ */ new WeakSet([Object.prototype, Error.prototype]);
 function _lazyMethod(proto, key, make) {
   Object.defineProperty(proto, key, {
@@ -5332,7 +5258,6 @@ var ZodRealError = /* @__PURE__ */ $constructor("ZodError", initializer2, void 0
   Parent: Error
 });
 
-// [bundled dependency]
 var parse = /* @__PURE__ */ _parse(ZodRealError);
 var parseAsync = /* @__PURE__ */ _parseAsync(ZodRealError);
 var safeParse = /* @__PURE__ */ _safeParse(ZodRealError);
@@ -5346,7 +5271,6 @@ var safeDecode = /* @__PURE__ */ _safeDecode(ZodRealError);
 var safeEncodeAsync = /* @__PURE__ */ _safeEncodeAsync(ZodRealError);
 var safeDecodeAsync = /* @__PURE__ */ _safeDecodeAsync(ZodRealError);
 
-// [bundled dependency]
 function _ensureDefaultLocale() {
   if (!globalConfig.localeError)
     config(en_default());
@@ -6203,17 +6127,14 @@ function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
 
-// src/board/board.mjs
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
-// src/board/engine-view.mjs
 var uuid2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 var isEngineReference = (value) => typeof value === "string" && (value.startsWith("engine:") || uuid2.test(value));
 
-// src/board/board.mjs
 function text(value, label, max = 2e3) {
   if (typeof value !== "string" || !value.trim() || value.length > max) throw new Error(`${label}: non-empty text, max ${max} characters`);
   return value.trim();
@@ -7052,7 +6973,6 @@ function execute(name, args) {
   }
 }
 
-// src/definitions.mjs
 var short = string2().trim().min(1).max(200);
 var list = array(string2().trim().min(1).max(2e3)).max(32).optional();
 var reference = object({ ref: string2().trim().min(1).max(2e3), version: short }).strict();
@@ -7073,20 +6993,22 @@ var common = {
   request_id: short.describe("Unique stable operation ID. Retry identical arguments with the same ID; use a new ID after revising an operation.")
 };
 var checkSchema = object({
-  type: _enum(["file_exists", "file_contains", "json_equals", "node_test"]),
-  path: string2().min(1),
+  type: _enum(["file_exists", "file_contains", "json_equals", "node_test", "command_test"]),
+  path: string2().min(1).optional(),
   value: string2().optional(),
   pointer: string2().optional(),
   expected: unknown().describe("Expected JSON value for json_equals").optional(),
   sourceId: string2().optional(),
   sha256: string2().optional(),
   testScript: string2().min(1).max(16384).optional().describe("Trusted CommonJS behavioral test script for node_test (receives checked artifact path as process.argv[1]; exit 0 = pass). Hashed and stored in team ContextStore at plan creation time."),
+  command: _enum(["node", "pytest", "python", "python3", "cargo", "go", "dotnet", "npm"]).optional().describe("Structured local test runner for command_test (npx and inline eval flags are forbidden)."),
+  args: array(string2().min(1).max(512)).max(32).optional().describe('Structured arguments for command_test (e.g. ["--test", "tests/app.test.mjs"], ["-m", "pytest"], ["test"]).'),
   timeoutMs: number2().int().min(100).max(12e4).optional()
 }).strict();
 var schedulingFields = {
   priority: _enum(["critical", "high", "normal", "low"]).optional(),
-  writeScopes: array(string2().min(1).max(240)).max(16).optional().describe("Declared relative write scopes. Enforced by runtime scheduler mutex (serializes overlapping concurrent tasks) and post-run workspace verification (fails undeclared writes)."),
-  autoAccept: boolean2().optional().describe("Requires at least one behavioral node_test check. Structural checks alone (file_exists, file_contains, json_equals) never auto-accept."),
+  writeScopes: array(string2().min(1).max(240)).max(16).optional().describe("Declared relative write scopes. Enforced by runtime scheduler mutex (serializes overlapping concurrent tasks) and post-run workspace verification / git-worktree two-tree diff (fails undeclared writes)."),
+  autoAccept: boolean2().optional().describe('Requires at least one immutable ContextStore-frozen node_test check. command_test and structural checks reach "checked" state and require explicit review/accept.'),
   maxRetries: number2().int().min(0).max(3).optional()
 };
 var planTaskSchema = object({
@@ -7114,13 +7036,17 @@ var primaryRawDefinitions = [
   ],
   [
     "engine_team",
-    "Manage durable SQLite-persisted teams (engine.sqlite WAL, survives DeepSeek Harness restarts). Use action=prepare to atomically create a paused team with 1-24 DAG tasks (priority, runtime-locked writeScopes, maxRetries, and behavioral node_test checks with inline testScript for autoAccept) and open the right-sidebar workbench; then resume when ready. Supports prepare, create, list, overview (attentionOnly), graph (CPM waves/critical path/scope overlap), accept_checked, pause, resume, cancel, archive and unarchive.",
+    "Manage durable SQLite-persisted teams (engine.sqlite WAL, survives DeepSeek Harness restarts). Use action=prepare to atomically create a paused team with 1-24 DAG tasks (isolated or git-worktree mode with repoPath, priority, runtime-locked writeScopes, maxRetries, and behavioral node_test/command_test checks for autoAccept) and open the right-sidebar workbench; then resume when ready. Supports prepare, create, list, overview (attentionOnly), graph (CPM waves/critical path/scope overlap), accept_checked, merge_preview, merge_apply (atomic superagent/<slug> branch publish), pause, resume, cancel, archive and unarchive.",
     object({
-      action: _enum(["prepare", "create", "list", "overview", "graph", "accept_checked", "pause", "resume", "cancel", "archive", "unarchive"]),
+      action: _enum(["prepare", "create", "list", "overview", "graph", "accept_checked", "merge_preview", "merge_apply", "pause", "resume", "cancel", "archive", "unarchive"]),
       teamId: string2().optional(),
       requestId: string2().optional(),
       name: string2().optional(),
       goal: string2().optional(),
+      workspaceMode: _enum(["isolated", "git-worktree"]).optional(),
+      repoPath: string2().min(1).max(1e3).optional(),
+      branchName: string2().min(1).max(100).optional(),
+      integrationCheck: checkSchema.optional(),
       members: array(object({
         name: string2().min(1),
         role: string2().min(1),
@@ -7133,7 +7059,7 @@ var primaryRawDefinitions = [
   ],
   [
     "engine_submit",
-    "Submit one persistent task into engine.sqlite with stable requestId, difficulty, optional priority/writeScopes/autoAccept/maxRetries, same-team dependencies, sources and objective checks. autoAccept=true strictly requires at least one behavioral node_test check (via testScript or sourceId+sha256).",
+    'Submit one persistent task into engine.sqlite with stable requestId, difficulty, optional priority/writeScopes/autoAccept/maxRetries, same-team dependencies, sources and objective checks (file_exists, file_contains, json_equals, node_test, command_test). autoAccept=true strictly requires at least one immutable node_test check; command_test reaches "checked" state for explicit review/accept.',
     object({
       requestId: string2().min(1),
       title: string2().min(1),
