@@ -1,16 +1,16 @@
 ---
 name: super-teams
 metadata:
-  version: 0.14.1-dsh.1
+  version: 0.15.0-dsh.1
   host: DeepSeek Harness
-description: 在 DeepSeek Harness 中提供统一的 SQLite WAL 持久关键路径 DAG 编排引擎（0.17.1-dsh.1）、Git Worktree 协作与原子分支发布、多语言 command_test / node_test 行为测试门禁与会话隔离右侧团队工作台。简单任务直接处理。
+description: SuperAgent 内置审阅工作台与共享持久内核（Engine 0.18.0-dsh.1 / Shared Core 0.18.0）：提供目标原话必达门禁、不可变交付候选与绑定批准、增量集成修订、基线漂移试合、只读 GitHub PR 对账及会话隔离右侧工作台。简单任务直接处理。
 ---
 
-# Super Teams 持久编排引擎与工作台（0.14.1-dsh.1）
+# Super Teams 审阅工作台与共享引擎内核（0.15.0-dsh.1）
 
-**职责边界（单一团队、单一持久状态源）**：
-- `superagent-workflow` 负责目标拆解、选路方法与交付标准；
-- `super-teams` 提供**唯一的团队持久数据目录**（`~/.dsh/profiles/<profile>/plugin-data/dsh-super-teams/`，默认 profile 为 `desktop`）与右侧「团队工作台」。默认仅注册 **8 个统一工具**（7 个 `engine_*` 核心编排工具 + 1 个同源只读查询工具 `teams_engine`），避免两套任务板概念混用。
+**职责边界（单产品单入口、单一调度所有者）**：
+- 对外统一为 **SuperAgent**，`superagent-workflow` 负责执行协议与目标验收标准；
+- `super-teams` 负责**审阅、人工干预右侧工作台与共享持久数据目录**（`~/.dsh/profiles/<profile>/plugin-data/dsh-super-teams/`，默认 profile 为 `desktop`，搭载与 Codex 字节级锁定的共享 `engine-core 0.18.0`），同数据目录单一调度所有者，支持 `criteria_*`、`candidate_*`、`publish_reconcile`、`pr_reconcile` 等全部 v0.18 动作。默认仅注册 **8 个统一工具**（7 个 `engine_*` 核心工具 + 1 个同源只读查询工具 `teams_engine`），避免两套任务板概念混用。
 
 ## 1. 标准筹备、Git Worktree 协作与行为门禁流程
 

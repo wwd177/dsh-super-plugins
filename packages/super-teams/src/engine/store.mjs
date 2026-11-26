@@ -80,10 +80,20 @@ export class Store {
         CREATE TABLE IF NOT EXISTS teams (id TEXT PRIMARY KEY, body TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS team_requests (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, team_id TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, body TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS goal_criteria (team_id TEXT NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (team_id, revision));
+        CREATE TABLE IF NOT EXISTS criteria_signoffs (id TEXT PRIMARY KEY, team_id TEXT NOT NULL, body TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS candidates (id TEXT PRIMARY KEY, team_id TEXT NOT NULL, body TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS candidate_approvals (id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL, body TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS publish_intents (id TEXT PRIMARY KEY, team_id TEXT NOT NULL, body TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS pr_links (id TEXT PRIMARY KEY, team_id TEXT NOT NULL, body TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS tasks_team_state ON tasks(json_extract(body,'$.teamId'), json_extract(body,'$.state'))
           WHERE json_extract(body,'$.teamId') IS NOT NULL;
         CREATE INDEX IF NOT EXISTS tasks_unresolved ON tasks(${unresolvedFlag}) WHERE ${unresolvedFlag}=1;
-        CREATE INDEX IF NOT EXISTS events_task ON events(task_id, seq);`);
+        CREATE INDEX IF NOT EXISTS events_task ON events(task_id, seq);
+        CREATE INDEX IF NOT EXISTS candidates_team ON candidates(team_id);
+        CREATE INDEX IF NOT EXISTS approvals_candidate ON candidate_approvals(candidate_id);
+        CREATE INDEX IF NOT EXISTS intents_team ON publish_intents(team_id);
+        CREATE INDEX IF NOT EXISTS pr_links_team ON pr_links(team_id);`);
     } catch (error) { this.close(); throw error; }
   }
   _guard(fn) {
@@ -135,6 +145,23 @@ export class Store {
     return { seq: Number(result.lastInsertRowid), ...event };
   }
   events(id, after, limit) { return this.db.prepare('SELECT seq,body FROM events WHERE task_id=? AND seq>? ORDER BY seq LIMIT ?').all(id, after, limit).map(row => ({ seq: row.seq, ...JSON.parse(row.body) })); }
+  saveGoalCriteria(record) { this.db.prepare('INSERT INTO goal_criteria(team_id,revision,body) VALUES(?,?,?) ON CONFLICT(team_id,revision) DO UPDATE SET body=excluded.body').run(record.teamId, record.revision, JSON.stringify(record)); }
+  latestGoalCriteria(teamId) { const row = this.db.prepare('SELECT body FROM goal_criteria WHERE team_id=? ORDER BY revision DESC LIMIT 1').get(teamId); return row ? JSON.parse(row.body) : null; }
+  goalCriteriaHistory(teamId) { return this.db.prepare('SELECT body FROM goal_criteria WHERE team_id=? ORDER BY revision ASC').all(teamId).map(r => JSON.parse(r.body)); }
+  saveCriteriaSignoff(record) { this.db.prepare('INSERT INTO criteria_signoffs(id,team_id,body) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(record.id, record.teamId, JSON.stringify(record)); }
+  criteriaSignoffs(teamId) { return this.db.prepare('SELECT body FROM criteria_signoffs WHERE team_id=? ORDER BY rowid').all(teamId).map(r => JSON.parse(r.body)); }
+  saveCandidate(record) { this.db.prepare('INSERT INTO candidates(id,team_id,body) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(record.id, record.teamId, JSON.stringify(record)); }
+  candidate(id) { const row = this.db.prepare('SELECT body FROM candidates WHERE id=?').get(id); return row ? JSON.parse(row.body) : null; }
+  teamCandidates(teamId) { return this.db.prepare('SELECT body FROM candidates WHERE team_id=? ORDER BY rowid').all(teamId).map(r => JSON.parse(r.body)); }
+  saveCandidateApproval(record) { this.db.prepare('INSERT INTO candidate_approvals(id,candidate_id,body) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(record.id, record.candidateId, JSON.stringify(record)); }
+  candidateApproval(id) { const row = this.db.prepare('SELECT body FROM candidate_approvals WHERE id=?').get(id); return row ? JSON.parse(row.body) : null; }
+  candidateApprovals(candidateId) { return this.db.prepare('SELECT body FROM candidate_approvals WHERE candidate_id=? ORDER BY rowid').all(candidateId).map(r => JSON.parse(r.body)); }
+  savePublishIntent(record) { this.db.prepare('INSERT INTO publish_intents(id,team_id,body) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(record.id, record.teamId, JSON.stringify(record)); }
+  publishIntent(id) { const row = this.db.prepare('SELECT body FROM publish_intents WHERE id=?').get(id); return row ? JSON.parse(row.body) : null; }
+  teamPublishIntents(teamId) { return this.db.prepare('SELECT body FROM publish_intents WHERE team_id=? ORDER BY rowid').all(teamId).map(r => JSON.parse(r.body)); }
+  savePrLink(record) { this.db.prepare('INSERT INTO pr_links(id,team_id,body) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(record.id, record.teamId, JSON.stringify(record)); }
+  prLink(id) { const row = this.db.prepare('SELECT body FROM pr_links WHERE id=?').get(id); return row ? JSON.parse(row.body) : null; }
+  teamPrLinks(teamId) { return this.db.prepare('SELECT body FROM pr_links WHERE team_id=? ORDER BY rowid').all(teamId).map(r => JSON.parse(r.body)); }
   close() {
     this.db?.close(); this.db = null;
     if (this.lock !== undefined) {

@@ -12,9 +12,9 @@
 
 | 组件 | 包名与版本 | 核心职责 |
 | --- | --- | --- |
-| **SuperAgent 协作与交付** | `@local/dsh-superagent-menu` (`1.22.1-dsh.1`) | 复杂任务拆解、证据选路、多语言行为测试门禁与 Git Worktree 集成方法论；内置 `superagent-workflow`、`workflow-quality`、`development-handoff` 3 套技能与聊天「＋」快捷菜单 |
-| **Super Teams 持久编排引擎** | `@local/dsh-super-teams` (`0.14.1-dsh.1`) | 内置 SQLite WAL 持久关键路径 DAG 编排引擎 (`0.17.1-dsh.1`)、Git Worktree 模式与原子分支合并、`command_test` 多语言门禁、8 个统一原生工具、会话隔离右侧「团队工作台」与 `super-teams` 技能 |
-| **AI 智能体专用安装 Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.1.1`) | 供其他 AI 智能体（DeepSeek Harness / Claude Code / Codex / Cursor / Antigravity 等）自动完成全平台检测、备份、自包含安装与哈希校验 |
+| **SuperAgent 协作与交付** | `@local/dsh-superagent-menu` (`1.23.0-dsh.1`) | 对外统一为 **SuperAgent** 产品执行协议：目标拆解、原话必达门禁（R2）、证据选路、多语言行为测试与 Git Worktree 集成方法论；内置 3 套技能与聊天「＋」入口 |
+| **Super Teams 审阅工作台与共享内核** | `@local/dsh-super-teams` (`0.15.0-dsh.1`) | 搭载与 Codex 字节级锁定的共享内核 `engine-core 0.18.0`（Engine `0.18.0-dsh.1`）：单调度所有者、不可变冻结交付候选与绑定批准、增量集成修订、基线漂移三方试合、只读 GitHub PR 对账与会话隔离右侧审阅工作台 |
+| **AI 智能体专用安装 Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.2.0`) | 供其他 AI 智能体自动完成全平台检测、备份、单入口自包含安装与逐文件 SHA-256 校验 |
 
 ---
 

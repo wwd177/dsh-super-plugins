@@ -16,6 +16,8 @@ import {
   treeContainsTopLevelPath,
   validateGitRepoSync,
 } from './git-worktree.mjs';
+import { CORE_VERSION } from './core/src/core-version.mjs';
+import { DeliveryService } from './core/src/delivery-service.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const now = () => new Date().toISOString();
@@ -25,7 +27,7 @@ const executing = new Set(['dispatching', 'running', 'pausing', 'cancelling']);
 const teamPreserved = new Set(['accepted', 'checked', 'submitted', 'failed', 'cancelled', 'abandoned']);
 const memberStatePriority = ['unknown', 'paused-unconfirmed', 'cancelled-unconfirmed', 'failed', 'running', 'dispatching', 'pausing', 'cancelling', 'submitted', 'checked', 'blocked', 'queued', 'paused', 'cancelled', 'accepted'];
 const countsOf = tasks => tasks.reduce((counts, task) => { counts[task.state] = (counts[task.state] ?? 0) + 1; return counts; }, {});
-const taskSummaryFields = ['id', 'title', 'teamId', 'memberId', 'sessionId', 'teamPauseOrigin', 'revision', 'state', 'blockReason', 'control', 'dependsOn', 'difficulty', 'priority', 'writeScopes', 'autoAccept', 'maxRetries', 'retryCount', 'nextRetryAt', 'workspaceMode', 'attemptStartCommit', 'cwd', 'threadId', 'turnId', 'attemptId', 'model', 'effort', 'modelReason', 'summary', 'error', 'runtimeError', 'completionStatus', 'executionUnresolved', 'reworkCount', 'reworkFeedback', 'startedAt', 'finishedAt', 'durationMs', 'usage', 'createdAt', 'updatedAt'];
+const taskSummaryFields = ['id', 'title', 'teamId', 'memberId', 'sessionId', 'teamPauseOrigin', 'revision', 'state', 'blockReason', 'control', 'dependsOn', 'difficulty', 'priority', 'writeScopes', 'autoAccept', 'maxRetries', 'retryCount', 'nextRetryAt', 'workspaceMode', 'attemptStartCommit', 'revisionOfCandidateId', 'affectedTaskIds', 'cwd', 'threadId', 'turnId', 'attemptId', 'model', 'effort', 'modelReason', 'summary', 'error', 'runtimeError', 'completionStatus', 'executionUnresolved', 'reworkCount', 'reworkFeedback', 'startedAt', 'finishedAt', 'durationMs', 'usage', 'createdAt', 'updatedAt'];
 const taskSummary = (task, liveActivity = null) => ({
   ...Object.fromEntries(taskSummaryFields.map(key => [key, task[key]])),
   ...(liveActivity ? { lastActivity: liveActivity } : {}),
@@ -77,12 +79,24 @@ function canonical(value) {
   return value;
 }
 
-function taskInput({ title, goal, dependsOn = [], sourceIds = [], difficulty = 'medium', checks = [], priority, writeScopes, autoAccept, maxRetries }) {
+function taskInput({ title, goal, dependsOn = [], sourceIds = [], difficulty = 'medium', checks = [], priority, writeScopes, autoAccept, maxRetries, revisionOfCandidateId, affectedTaskIds }) {
   if ([goal, title].some(value => typeof value !== 'string' || !value.trim())) throw new Error('requestId, title and goal are required');
   if (!['low', 'easy', 'medium', 'high', 'hard'].includes(difficulty)) throw new Error('Unsupported difficulty');
   if (!Array.isArray(dependsOn) || !Array.isArray(sourceIds) || !Array.isArray(checks)) throw new Error('Invalid task arrays');
   checks.forEach(validateCheck);
   const input = { title, goal, dependsOn, sourceIds, difficulty, checks };
+  if (revisionOfCandidateId !== undefined && revisionOfCandidateId !== null) {
+    if (typeof revisionOfCandidateId !== 'string' || !revisionOfCandidateId.trim() || revisionOfCandidateId.length > 100) {
+      throw new Error('revisionOfCandidateId must be a non-empty string');
+    }
+    input.revisionOfCandidateId = revisionOfCandidateId.trim();
+  }
+  if (affectedTaskIds !== undefined && affectedTaskIds !== null) {
+    if (!Array.isArray(affectedTaskIds) || affectedTaskIds.length > 32 || affectedTaskIds.some(id => typeof id !== 'string' || !id.trim())) {
+      throw new Error('affectedTaskIds must be an array of up to 32 non-empty task IDs');
+    }
+    input.affectedTaskIds = [...new Set(affectedTaskIds.map(id => id.trim()))];
+  }
   if (priority !== undefined) {
     if (!VALID_PRIORITIES.includes(priority)) throw new Error('Unsupported priority');
     input.priority = priority;
@@ -180,6 +194,12 @@ export class Engine extends EventEmitter {
     this.verifying = new Map();
     this.finishing = new Map();
     this.liveActivity = new Map();
+    this.delivery = new DeliveryService({
+      engine: this,
+      runStandaloneCheck,
+      validateCheck,
+      isBehavioralCheck,
+    });
   }
   setMaxConcurrent(value) {
     this._ready();
@@ -361,7 +381,19 @@ export class Engine extends EventEmitter {
       const representative = active.length === 1 ? active[0] : active.length > 1 ? null : assigned.filter(task => task.state === state).at(-1);
       return { ...member, taskIds: assigned.map(task => task.id), activeTaskIds: active.map(task => task.id), tasks: assigned, state, model: representative?.model ?? null, effort: representative?.effort ?? null };
     });
-    return { ...team, archived: Boolean(team.archived), members, tasks, counts: countsOf(tasks), graph };
+    return {
+      ...team,
+      coreVersion: CORE_VERSION,
+      archived: Boolean(team.archived),
+      members,
+      tasks,
+      counts: countsOf(tasks),
+      graph,
+      goalCriteria: this.store.latestGoalCriteria(id),
+      candidates: this.store.teamCandidates(id),
+      publishIntents: this.store.teamPublishIntents(id),
+      prLinks: this.store.teamPrLinks(id),
+    };
   }
   getTeamGraph(id) {
     this._team(id);
@@ -437,6 +469,11 @@ export class Engine extends EventEmitter {
     const prior = this.store.request(requestId);
     if (prior) { if (prior.fingerprint !== fingerprint) throw new Error('requestId already used with different parameters'); return this.get(prior.taskId); }
     if (team?.control === 'cancel') throw new Error('Cancelled teams cannot accept new tasks');
+    if (input.revisionOfCandidateId) {
+      if (!team || team.workspaceMode !== 'git-worktree') throw new Error('revisionOfCandidateId requires a workspaceMode="git-worktree" team');
+      const parentCand = this.store.candidate(input.revisionOfCandidateId);
+      if (!parentCand || parentCand.teamId !== team.id) throw new Error(`Parent candidate not found in team: ${input.revisionOfCandidateId}`);
+    }
     for (const id of input.dependsOn) if (this._task(id).teamId !== teamId) throw new Error('Dependencies must belong to the same team or legacy scope');
     const targetContext = this._contextForTask(input);
     if (input.checks.some(c => c.type === 'node_test' && typeof c.testScript === 'string')) {
@@ -645,12 +682,23 @@ export class Engine extends EventEmitter {
           if (fs.existsSync(current) && fs.lstatSync(current).isSymbolicLink()) throw new Error('Workspace ancestor is a symbolic link');
           if (idx === segments.length - 1) {
             if (isWorktree) {
-              const gitDeps = this._collectTransitiveGitDependencies(task);
+              let wtBaseCommit = team.baseCommit;
+              let depPatches = [];
+              if (task.revisionOfCandidateId) {
+                const parentCand = this.store.candidate(task.revisionOfCandidateId);
+                if (!parentCand || parentCand.teamId !== team.id || !parentCand.commitOid) {
+                  throw new Error(`Parent candidate ${task.revisionOfCandidateId} is missing or invalid`);
+                }
+                wtBaseCommit = parentCand.commitOid;
+              } else {
+                const gitDeps = this._collectTransitiveGitDependencies(task);
+                depPatches = gitDeps.dependencyPatches;
+              }
               const wt = await prepareAttemptWorktree({
                 repoPath: team.repoPath,
-                baseCommit: team.baseCommit,
+                baseCommit: wtBaseCommit,
                 cwd,
-                dependencyPatches: gitDeps.dependencyPatches,
+                dependencyPatches: depPatches,
                 allowedBaseDir: path.join(this.dataDir, 'workspaces'),
               });
               attemptStartCommit = wt.attemptStartCommit;
@@ -813,7 +861,10 @@ export class Engine extends EventEmitter {
     }
     return { orderedDeps: ordered, dependencyPatches };
   }
-  async mergeTeam(teamId, { apply = false, branchName = null, integrationCheck = null } = {}) {
+  async mergeTeam(teamId, { apply = false, branchName = null, integrationCheck = null, candidateId = null, approvalId = null } = {}) {
+    if (candidateId && apply === true) {
+      return this.delivery.publishCandidateLocal(teamId, { candidateId, approvalId, branchName });
+    }
     const team = this._team(teamId);
     if (team.workspaceMode !== 'git-worktree' || !team.repoPath || !team.baseCommit) {
       throw new Error('merge_preview and merge_apply are only available for workspaceMode="git-worktree" teams');
@@ -852,11 +903,26 @@ export class Engine extends EventEmitter {
         mergedCommit: result.mergedCommit,
         baseCommit: result.baseCommit,
         taskIds: result.appliedTasks.map(t => t.taskId),
+        localBranchOnly: true,
       };
       this._saveTeam(freshTeam, 'team-merged');
     }
-    return { ...result, unacceptedTaskCount: unaccepted.length, unacceptedTasks: unaccepted };
+    return { ...result, scope: 'local_branch_only', remoteMerged: false, unacceptedTaskCount: unaccepted.length, unacceptedTasks: unaccepted };
   }
+  // v0.18 共享交付候选、目标门禁、本地发布恢复、基线漂移与只读 PR 对账入口
+  previewGoalCriteria(teamId, opts) { return this.delivery.previewGoalCriteria(teamId, opts); }
+  freezeCriteria(teamId, opts) { return this.delivery.freezeCriteria(teamId, opts); }
+  getLatestCriteria(teamId) { return this.delivery.getLatestCriteria(teamId); }
+  recordCriterionSignoff(teamId, opts) { return this.delivery.recordCriterionSignoff(teamId, opts); }
+  createCandidate(teamId, opts) { return this.delivery.createCandidate(teamId, opts); }
+  getCandidate(teamId, candidateId) { return this.delivery.getCandidate(teamId, candidateId); }
+  listCandidates(teamId) { return this.delivery.listCandidates(teamId); }
+  approveCandidate(teamId, opts) { return this.delivery.approveCandidate(teamId, opts); }
+  revokeApproval(teamId, opts) { return this.delivery.revokeApproval(teamId, opts); }
+  publishCandidateLocal(teamId, opts) { return this.delivery.publishCandidateLocal(teamId, opts); }
+  reconcilePublishIntents(teamId) { return this.delivery.reconcilePublishIntents(teamId); }
+  checkCandidateBaseDrift(teamId, opts) { return this.delivery.checkCandidateBaseDrift(teamId, opts); }
+  reconcileGitHubPr(teamId, opts) { return this.delivery.reconcileGitHubPr(teamId, opts); }
   async _dependencyContext(task) {
     const versions = [], sourceIds = [], manifests = [], snapshots = [];
     for (const id of task.dependsOn) {

@@ -578,10 +578,18 @@ try {
   await untilDual("window.__HOST_A__.shadowRoot.querySelector('#notice').textContent.includes('合并预览通过')");
   await evalDual(`(() => {
     const s = window.__HOST_A__.shadowRoot;
-    const det = [...s.querySelectorAll('#overview details')].find(d => d.textContent.includes('Git Worktree 合并与分支发布'));
+    const det = [...s.querySelectorAll('#overview details')].find(d => d.textContent.includes('Git Worktree 冻结候选'));
     det.open = true;
     det.querySelector('input[data-merge-branch]').value = 'ui-smoke-branch';
-    [...det.querySelectorAll('button')].find(b => b.textContent.includes('原子发布到新分支')).click();
+    [...det.querySelectorAll('button')].find(b => b.textContent.includes('生成冻结候选')).click();
+  })()`);
+  await untilDual("window.__HOST_A__.shadowRoot.querySelector('#notice').textContent.includes('已生成冻结候选')");
+  await evalDual(`(() => {
+    const s = window.__HOST_A__.shadowRoot;
+    const det = [...s.querySelectorAll('#overview details')].find(d => d.textContent.includes('Git Worktree 冻结候选'));
+    det.open = true;
+    det.querySelector('input[data-merge-branch]').value = 'ui-smoke-branch';
+    [...det.querySelectorAll('button')].find(b => b.textContent.includes('批准并发布当前候选')).click();
   })()`);
   await untilDual("window.__HOST_A__.shadowRoot.querySelector('#notice').textContent.includes('superagent/ui-smoke-branch')");
   const createdBranches = execFileSync('git', ['branch', '--list', 'superagent/ui-smoke-branch'], { cwd: gitRepoDir, encoding: 'utf8' }).trim();

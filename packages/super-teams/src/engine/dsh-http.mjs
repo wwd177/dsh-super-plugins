@@ -362,7 +362,33 @@ export function createDshEngineRouter({
           return send(200, await engine.mergeTeam(teamId, { apply: false, integrationCheck: input?.integrationCheck ?? null }));
         }
         if (req.method === 'POST' && parts[3] === 'merge-apply' && parts.length === 4) {
-          return send(200, await engine.mergeTeam(teamId, { apply: true, branchName: input?.branchName ?? null, integrationCheck: input?.integrationCheck ?? null }));
+          return send(200, await engine.mergeTeam(teamId, { apply: true, branchName: input?.branchName ?? null, integrationCheck: input?.integrationCheck ?? null, candidateId: input?.candidateId ?? null, approvalId: input?.approvalId ?? null }));
+        }
+        if (parts[3] === 'criteria') {
+          if (req.method === 'GET' && parts.length === 4) return send(200, engine.getLatestCriteria(teamId));
+          if (req.method === 'POST' && parts[4] === 'preview') return send(200, engine.previewGoalCriteria(teamId, input));
+          if (req.method === 'POST' && parts[4] === 'freeze') return send(201, engine.freezeCriteria(teamId, input));
+          if (req.method === 'POST' && parts[4] === 'signoff') return send(201, engine.recordCriterionSignoff(teamId, input));
+        }
+        if (parts[3] === 'candidates') {
+          if (req.method === 'GET' && parts.length === 4) return send(200, engine.listCandidates(teamId));
+          if (req.method === 'POST' && parts.length === 4) return send(201, await engine.createCandidate(teamId, input));
+          if (parts[4]) {
+            const candId = decodeURIComponent(parts[4]);
+            if (req.method === 'GET' && parts.length === 5) return send(200, engine.getCandidate(teamId, candId));
+            if (req.method === 'POST' && parts[5] === 'approve') return send(201, engine.approveCandidate(teamId, { ...input, candidateId: candId }));
+            if (req.method === 'POST' && parts[5] === 'publish-local') return send(200, await engine.publishCandidateLocal(teamId, { ...input, candidateId: candId }));
+            if (req.method === 'POST' && parts[5] === 'base-drift') return send(200, await engine.checkCandidateBaseDrift(teamId, { ...input, candidateId: candId }));
+          }
+        }
+        if (req.method === 'POST' && parts[3] === 'approvals' && parts[4] && parts[5] === 'revoke') {
+          return send(200, engine.revokeApproval(teamId, { ...input, approvalId: decodeURIComponent(parts[4]) }));
+        }
+        if (req.method === 'POST' && parts[3] === 'publish-intents' && parts[4] === 'reconcile') {
+          return send(200, await engine.reconcilePublishIntents(teamId));
+        }
+        if (req.method === 'POST' && parts[3] === 'pr' && parts[4] === 'reconcile') {
+          return send(200, await engine.reconcileGitHubPr(teamId, input));
         }
         if (req.method === 'POST' && parts[3] === 'session' && parts.length === 4) {
           return send(200, engine.bindTeamSession(teamId, input.sessionId));

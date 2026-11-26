@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.18.0-dsh.1 (SuperAgent `1.23.0-dsh.1` / Super Teams `0.15.0-dsh.1` / Shared Core `0.18.0` / Installer Skill `1.2.0`)
+
+Implements all 8 v0.18 architecture rulings (`R1`–`R8`) across both DeepSeek Harness and Codex on a single SHA-256 locked shared `engine-core`:
+
+- **R1 — Unified Product Entry & Locked Shared `engine-core` (`0.18.0`)**:
+  - Extracted shared `goal-criteria`, `delivery-candidate`, `git-worktree`, `github-readonly`, and `delivery-service` into a locked shared core synchronized byte-for-byte with Codex (`core-lock.json` SHA-256 parity).
+  - Enforced a single scheduler owner per `dataDir` inside DSH (`activeRuntimeOwners` registry) while preserving transparent backward compatibility for legacy entrypoints and existing `0.17.1` databases.
+- **R2 — Frozen Goal Criteria & Unmapped User Requirement Visibility**:
+  - Added `criteria_preview` / `criteria_freeze` / `criteria_get` / `criteria_signoff` actions; splits raw user goals into traceable segments and explicitly highlights any user requirement not covered by a mandatory check or named human sign-off (rejecting `skipped`, `neutral`, empty tests, or pending sign-offs).
+- **R3 & R4 — Immutable Delivery Candidates, Bound Approvals & Crash-Safe Local Publish**:
+  - Eliminated TOCTOU drift between preview and publish: approvals bind strictly to `(candidateId, commitOid, purpose, targetRef, criteriaRevision, gateHash)` — approving Candidate A can never publish A+B or survive revoked/drifted criteria.
+  - Pinned frozen candidate commits under `refs/superagent/candidates/<candidateId>` to survive `git gc --prune=now` and engine restarts.
+  - Added persistent `publish_intents` and `publish_reconcile` to distinguish crash-after-`git update-ref` (recovers matching receipt) from external branch occupation (`external_drift`, halts writes), while separating `local_branch_only` status from remote PR merge.
+- **R5 & R6 — Immutable Accepted Snapshots, Incremental Integration Revisions & Base-Drift Reconciliation**:
+  - Added `revisionOfCandidateId` + `affectedTaskIds` on `engine_submit` so integration revisions start cleanly from `C1.commitOid` without mutating accepted `A`/`B` records; `C2 = C1 + R1.patch` verifies tree OID equivalence against full replay from `baseCommit`, while replacing a snapshot (e.g., `A1 -> A2`) cleanly rebuilds from base so removed files disappear.
+  - Added `candidate_base_drift` using isolated three-way `git merge-tree --write-tree` to report clean drift vs `integration_conflict` with exact `mergeBase`, `targetCommit`, `candidateCommit`, and `conflictPaths` without blindly re-dispatching tasks.
+- **R7 & R8 — Three-Layer Status Separation & Read-Only GitHub PR Reconciliation**:
+  - Added `pr_reconcile` (`writeRequestsMade: 0`) querying `state=all` across pages, preserving known PR IDs even when body markers are deleted, reporting `unknown` honestly when unbound closed PR ownership cannot be proven, and strictly separating remote merge status from local goal acceptance (`PR merged B` while locally verified `A` never auto-greens the goal).
+
 ## v0.17.1-dsh.1 (SuperAgent `1.22.1-dsh.1` / Super Teams `0.14.1-dsh.1` / Installer Skill `1.1.1`)
 
 - **Strict Multi-Chat Workbench Session Isolation (Fixes Dual-Panel Cross-Talk)**:

@@ -75,11 +75,48 @@ function createBundledSkillProvider() {
   };
 }
 
+// R1：按规范化 dataDir 维护进程内唯一调度所有者注册表，确保新旧入口同时打开同一数据目录时只存在单一调度实例
+const activeRuntimeOwners = new Map();
+
+function acquireRuntimeOwner({ ctx, dataDir }) {
+  const probe = new DshSuperTeamsRuntime({ ctx, ...(dataDir ? { dataDir } : {}) });
+  const key = process.platform === 'win32' ? probe.dataDir.toLowerCase() : probe.dataDir;
+  const existing = activeRuntimeOwners.get(key);
+  if (existing && !existing.runtime.closed) {
+    existing.refCount++;
+    return {
+      runtime: existing.runtime,
+      release() {
+        existing.refCount--;
+        if (existing.refCount <= 0) {
+          activeRuntimeOwners.delete(key);
+          return existing.runtime.close();
+        }
+        return undefined;
+      },
+    };
+  }
+  const entry = { runtime: probe, refCount: 1 };
+  activeRuntimeOwners.set(key, entry);
+  return {
+    runtime: probe,
+    release() {
+      entry.refCount--;
+      if (entry.refCount <= 0) {
+        activeRuntimeOwners.delete(key);
+        return entry.runtime.close();
+      }
+      return undefined;
+    },
+  };
+}
+
 export function apply(ctx, config = {}) {
-  const runtime = new DshSuperTeamsRuntime({
+  const ownership = acquireRuntimeOwner({
     ctx,
-    ...(config?.dataDir ? { dataDir: config.dataDir } : {}),
+    dataDir: config?.dataDir,
   });
+  const runtime = ownership.runtime;
 
   const enableLegacyBoard = config?.enableLegacyBoard === true || process.env.DSH_SUPER_TEAMS_LEGACY === '1';
   const activeSchemas = enableLegacyBoard
@@ -133,6 +170,6 @@ export function apply(ctx, config = {}) {
   });
 
   ctx.effect?.(() => {
-    return () => runtime.close();
+    return () => ownership.release();
   }, 'super-teams: runtime disposal');
 }

@@ -405,6 +405,47 @@ export class DshSuperTeamsRuntime {
           apply: a.action === 'merge_apply',
           branchName: a.branchName,
           integrationCheck: a.integrationCheck,
+          candidateId: a.candidateId,
+          approvalId: a.approvalId,
+        });
+      }
+      if (a.action === 'criteria_get') return engine.getLatestCriteria(a.teamId);
+      if (a.action === 'criteria_preview') return engine.previewGoalCriteria(a.teamId, { rawGoal: a.rawGoal, criteria: a.criteria, dispositions: a.dispositions });
+      if (a.action === 'criteria_freeze') return engine.freezeCriteria(a.teamId, { rawGoal: a.rawGoal, criteria: a.criteria, dispositions: a.dispositions, confirmedBy: a.confirmedBy ?? actor });
+      if (a.action === 'criteria_signoff') return engine.recordCriterionSignoff(a.teamId, { criterionId: a.criterionId, candidateId: a.candidateId, signer: a.signer ?? actor, note: a.note });
+      if (a.action === 'candidate_list') return engine.listCandidates(a.teamId);
+      if (a.action === 'candidate_create') return engine.createCandidate(a.teamId, { taskIds: a.taskIds, parentCandidateId: a.parentCandidateId, targetRef: a.targetRef, integrationCheck: a.integrationCheck });
+      if (a.action === 'candidate_get') {
+        if (!a.candidateId) throw new Error('candidateId is required');
+        return engine.getCandidate(a.teamId, a.candidateId);
+      }
+      if (a.action === 'candidate_approve') {
+        if (!a.candidateId) throw new Error('candidateId is required');
+        return engine.approveCandidate(a.teamId, { candidateId: a.candidateId, purpose: a.purpose, branchName: a.branchName, targetRef: a.targetRef, actor, note: a.note });
+      }
+      if (a.action === 'approval_revoke') {
+        if (!a.approvalId) throw new Error('approvalId is required');
+        return engine.revokeApproval(a.teamId, { approvalId: a.approvalId, reason: a.reason });
+      }
+      if (a.action === 'candidate_publish_local') {
+        if (!a.candidateId || !a.approvalId) throw new Error('candidateId and approvalId are required');
+        return engine.publishCandidateLocal(a.teamId, { candidateId: a.candidateId, approvalId: a.approvalId, branchName: a.branchName });
+      }
+      if (a.action === 'publish_reconcile') return engine.reconcilePublishIntents(a.teamId);
+      if (a.action === 'candidate_base_drift') {
+        if (!a.candidateId) throw new Error('candidateId is required');
+        return engine.checkCandidateBaseDrift(a.teamId, { candidateId: a.candidateId, targetRef: a.targetRef });
+      }
+      if (a.action === 'pr_reconcile') {
+        return engine.reconcileGitHubPr(a.teamId, {
+          repo: a.repo,
+          prNumber: a.prNumber,
+          headRepo: a.headRepo,
+          headBranch: a.headBranch,
+          baseBranch: a.baseBranch,
+          expectedIntentId: a.expectedIntentId,
+          candidateId: a.candidateId,
+          linkId: a.linkId,
         });
       }
       if (a.action === 'archive' || a.action === 'unarchive') {

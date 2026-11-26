@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Super Teams",
-    "description": "统一 SQLite WAL 持久关键路径 DAG 编排引擎（0.17.1-dsh.1）、Git Worktree 协作与原子合并、多语言 command_test 行为门禁、写入范围互斥锁与会话隔离右侧团队工作台。"
+    "description": "SuperAgent 共享持久内核（Engine 0.18.0-dsh.1）：目标原话冻结门禁、不可变交付候选、增量集成修订、只读 GitHub PR 对账与会话隔离右侧审阅工作台。"
   }
 }

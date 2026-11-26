@@ -635,8 +635,51 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
       box.append(controls);
       if (team.workspaceMode === 'git-worktree') {
         const hasAccepted = tasks.some(task => task.state === 'accepted');
-        const mergePanel = technical('Git Worktree 合并与分支发布（仅新建 superagent/*）', 'git-merge:' + team.id);
-        mergePanel.append(node('p', '在临时 detached staging worktree 重放全部已验收任务的冻结补丁，通过后以原子 create-only 方式发布到全新 superagent/<slug> 分支，绝不改动当前活工作树与既有分支。', 'hint'));
+        const candidates = Array.isArray(team.candidates) ? team.candidates : [];
+        const latestCand = candidates.at(-1) || null;
+        const prLinks = Array.isArray(team.prLinks) ? team.prLinks : [];
+        const latestPr = prLinks.at(-1) || null;
+        const criteria = team.goalCriteria || null;
+
+        // R2/R7：三层分离状态条（本地分支 / 目标验收 / 远端 PR 事实）与未覆盖原文暴露
+        const statusStrip = node('div', undefined, 'actions');
+        if (latestCand?.localPublish) {
+          statusStrip.append(node('span', '本地分支：' + latestCand.localPublish.branch, 'mini-tag'));
+        } else if (team.lastMerge?.branch) {
+          statusStrip.append(node('span', '本地分支：' + team.lastMerge.branch, 'mini-tag'));
+        }
+        if (latestCand) {
+          const gp = Boolean(latestCand.goalEvaluation?.goalPassed);
+          statusStrip.append(node('span', gp ? '目标已验收' : (latestCand.isPartial ? '可供审阅（部分成果）' : '待完成目标门禁'), 'mini-tag' + (gp ? ' auto' : ' prio')));
+        }
+        if (latestPr) {
+          const prObs = latestPr.lastObservation || {};
+          const prLabel = latestPr.remoteMerged
+            ? 'GitHub PR #' + latestPr.prNumber + ' 已合入' + (latestPr.versionMismatch ? '（⚠ 与本地验收版本不一致）' : '')
+            : latestPr.externalDrift
+              ? 'GitHub PR #' + latestPr.prNumber + ' 外部漂移（只读）'
+              : 'GitHub PR #' + (latestPr.prNumber || '?') + ' · ' + (prObs.pr?.state || latestPr.status);
+          statusStrip.append(node('span', prLabel, 'mini-tag' + (latestPr.versionMismatch || latestPr.externalDrift ? ' critical' : '')));
+        }
+        if (statusStrip.children.length) box.append(statusStrip);
+
+        if (criteria?.unmappedSegments?.length) {
+          const unmappedWarn = node('div', undefined, 'scope-warning');
+          unmappedWarn.textContent = '⚠ 以下用户原话尚未映射验收方式（目标无法自动变绿）：' + criteria.unmappedSegments.map(s => `「${s.text}」`).join('；');
+          box.append(unmappedWarn);
+        }
+
+        const mergePanel = technical('Git Worktree 冻结候选、本地发布与只读 PR 对账（v0.18）', 'git-merge:' + team.id);
+        mergePanel.append(node('p', '先锁定不可变冻结候选（批准 A 绝不漂移发布 A+B），仅以原子 CAS 方式创建全新本地 superagent/<slug> 分支，绝不改动活工作树或既有用户分支；本地分支与远端 PR 合入分开记录。', 'hint'));
+        if (latestCand) {
+          mergePanel.append(node('p', `最新冻结候选 ${latestCand.id} · 提交 ${String(latestCand.commitOid || '').slice(0, 12)} · 模式 ${latestCand.assemblyMode || 'full_replay'} · 含 ${(latestCand.entries || []).length} 项快照`, 'meta'));
+          if (latestCand.baseDrift?.drifted) {
+            mergePanel.append(node('p', '基线漂移检查：' + (latestCand.baseDrift.ok ? '无冲突' : '存在集成冲突 (' + (latestCand.baseDrift.conflictPaths || []).join(', ') + ')') + ' · 目标 ' + String(latestCand.baseDrift.targetCommit || '').slice(0, 12), latestCand.baseDrift.ok ? 'meta' : 'error'));
+          }
+        }
+        if (latestPr?.lastObservation?.summaryNote) {
+          mergePanel.append(node('p', latestPr.lastObservation.summaryNote, latestPr.versionMismatch || latestPr.externalDrift ? 'error' : 'meta'));
+        }
         const branchLabel = node('label', '目标分支后缀（可选，自动加 superagent/ 前缀）');
         const branchInput = node('input');
         branchInput.type = 'text';
@@ -645,12 +688,21 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
         branchInput.dataset.mergeBranch = team.id;
         branchLabel.append(branchInput);
         const mergeActions = node('div', undefined, 'actions');
+        const freezeCandBtn = button('生成冻结候选', () => createFrozenCandidate(team.id), 'merge:' + team.id);
+        freezeCandBtn.dataset.unavailable = String(!hasAccepted);
         const applyBtn = button('原子发布到新分支', () => applyGitMerge(team.id, branchInput.value.trim() || null), 'merge:' + team.id, 'primary-good');
         applyBtn.dataset.unavailable = String(!hasAccepted);
         mergeActions.append(
+          freezeCandBtn,
           button('仅预览冲突与 Diff', () => previewGitMerge(team.id), 'merge:' + team.id),
           applyBtn,
         );
+        if (latestCand) {
+          mergeActions.append(
+            button('批准并发布当前候选', () => approveAndPublishCandidate(team.id, latestCand.id, branchInput.value.trim() || null), 'merge:' + team.id),
+            button('检查目标基线漂移', () => checkBaseDrift(team.id, latestCand.id), 'merge:' + team.id, 'quiet'),
+          );
+        }
         mergePanel.append(branchLabel, mergeActions);
         box.append(mergePanel);
       }
@@ -681,9 +733,37 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
     }
   }
   async function applyGitMerge(id, branchName) {
-    notice('正在临时 detached worktree 中重放补丁并原子发布新分支…');
+    notice('正在临时 detached worktree 中重放补丁并原子发布新本地分支…');
     const r = await api('/teams/' + encodeURIComponent(id) + '/merge-apply', 'POST', branchName ? { branchName } : {});
-    notice(`已原子发布到新分支 ${r.branch}（提交 ${String(r.mergedCommit || '').slice(0, 12)}），共纳入 ${(r.appliedTasks || []).length} 项已验收任务；当前活工作树与既有分支未受改动。`);
+    notice(`已原子创建本地分支 ${r.branch}（提交 ${String(r.mergedCommit || r.commitOid || '').slice(0, 12)}），共纳入 ${(r.appliedTasks || []).length} 项已验收任务；本地分支创建不等于远端 PR 合入，当前活工作树未受改动。`);
+  }
+  async function createFrozenCandidate(id) {
+    notice('正在组装不可变交付候选并固定 Git 对象引用…');
+    const r = await api('/teams/' + encodeURIComponent(id) + '/candidates', 'POST', {});
+    if (!r.ok && r.conflict) {
+      notice(`候选组装发现冲突：任务 ${r.conflict.title || r.conflict.taskId}：${r.conflict.detail}`);
+      return;
+    }
+    const c = r.candidate;
+    notice(`已生成冻结候选 ${c.id}（提交 ${String(c.commitOid || '').slice(0, 12)}，${c.isPartial ? '部分成果可供审阅' : '全量已验收'}，${c.goalEvaluation?.goalPassed ? '目标门禁已通过' : '尚有待完成目标条件'}）。`);
+  }
+  async function approveAndPublishCandidate(id, candidateId, branchName) {
+    notice(`正在为冻结候选 ${candidateId} 记录绑定批准并原子发布本地分支…`);
+    const app = await api('/teams/' + encodeURIComponent(id) + '/candidates/' + encodeURIComponent(candidateId) + '/approve', 'POST', {
+      purpose: 'local_publish',
+      ...(branchName ? { branchName } : {}),
+      actor: 'dsh-workbench:maintainer',
+    });
+    const pub = await api('/teams/' + encodeURIComponent(id) + '/candidates/' + encodeURIComponent(candidateId) + '/publish-local', 'POST', {
+      approvalId: app.id,
+      ...(branchName ? { branchName } : {}),
+    });
+    notice(pub.note || `已按绑定批准发布本地分支 ${pub.branch}。`);
+  }
+  async function checkBaseDrift(id, candidateId) {
+    notice(`正在隔离三方试合目标分支与候选 ${candidateId}…`);
+    const r = await api('/teams/' + encodeURIComponent(id) + '/candidates/' + encodeURIComponent(candidateId) + '/base-drift', 'POST', {});
+    notice(r.ok ? (r.detail || '目标基线试合无冲突。') : `检测到目标基线与候选集成冲突（路径：${(r.conflictPaths || []).join(', ')}）：${r.detail}`);
   }
   async function archiveTeam(id, archived) {
     await api('/teams/' + encodeURIComponent(id) + '/archive', 'POST', { archived });

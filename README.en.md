@@ -12,9 +12,9 @@ Runs directly inside the DeepSeek Harness Cordis host process — **zero externa
 
 | Component | Package & Version | Role |
 | --- | --- | --- |
-| **SuperAgent Workflow & Delivery** | `@local/dsh-superagent-menu` (`1.22.1-dsh.1`) | Task decomposition, evidence-based routing, polyglot behavioral verification gates, and Git worktree integration methodology; includes `superagent-workflow`, `workflow-quality`, and `development-handoff` skills plus `+` menu actions |
-| **Super Teams Persistent Engine** | `@local/dsh-super-teams` (`0.14.1-dsh.1`) | Unified SQLite WAL critical-path DAG engine (`0.17.1-dsh.1`), hardened `git-worktree` mode with atomic branch merge, polyglot `command_test` gate, 8 native tools, session-isolated right-sidebar Team Workbench, and the `super-teams` skill |
-| **AI Agent Installer Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.1.1`) | Dedicated skill allowing any AI coding agent (DeepSeek Harness, Claude Code, Codex, Cursor, Windsurf, Antigravity, etc.) to safely install, verify, or uninstall both plugins |
+| **SuperAgent Workflow & Protocol** | `@local/dsh-superagent-menu` (`1.23.0-dsh.1`) | Unified **SuperAgent** execution protocol: goal criteria freezing (R2), evidence-based routing, polyglot verification gates, and Git worktree delivery methodology; includes 3 skills plus `+` menu actions |
+| **Super Teams Review Workbench & Shared Core** | `@local/dsh-super-teams` (`0.15.0-dsh.1`) | Powered by SHA-256 locked shared `engine-core 0.18.0` (`Engine 0.18.0-dsh.1`): single scheduler owner, immutable delivery candidates & bound approvals, incremental integration revisions, base-drift three-way merge checks, read-only GitHub PR reconciliation, and session-isolated right-sidebar workbench |
+| **AI Agent Installer Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.2.0`) | Dedicated skill for any AI coding agent to safely install, verify, or uninstall the suite via one entrypoint |
 
 ---
 

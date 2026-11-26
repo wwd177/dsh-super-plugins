@@ -1,14 +1,14 @@
 ---
 name: dsh-super-plugins-installer
 metadata:
-  version: 1.1.1
+  version: 1.2.0
   targets: DeepSeek Harness (>=0.2.0-rc.1 <0.3.0-0)
 description: Install, upgrade, verify, or uninstall the SuperAgent (@local/dsh-superagent-menu) and Super Teams (@local/dsh-super-teams) plugins plus their 4 companion skills into DeepSeek Harness on Windows, macOS, or Linux. Use whenever a user asks an AI agent to install, update, repair, check, or remove SuperAgent / Super Teams / dsh-super-plugins for DeepSeek Harness.
 ---
 
 # DeepSeek Harness · SuperAgent & Super Teams Installer Skill
 
-Follow this deterministic, non-destructive playbook to install **both** plugins (`@local/dsh-superagent-menu` `1.22.1-dsh.1` and `@local/dsh-super-teams` `0.14.1-dsh.1`, powered by persistent SQLite WAL Engine `0.17.1-dsh.1`) and their **4 companion skills** (`superagent-workflow`, `workflow-quality`, `development-handoff`, `super-teams`) into a user's local **DeepSeek Harness** (`0.2.x`) installation on **Windows, macOS, or Linux**.
+Follow this deterministic, non-destructive playbook to install **both** plugins (`@local/dsh-superagent-menu` `1.23.0-dsh.1` and `@local/dsh-super-teams` `0.15.0-dsh.1`, powered by locked shared `engine-core 0.18.0` / SQLite WAL Engine `0.18.0-dsh.1`) and their **4 companion skills** (`superagent-workflow`, `workflow-quality`, `development-handoff`, `super-teams`) into a user's local **DeepSeek Harness** (`0.2.x`) installation on **Windows, macOS, or Linux**.
 
 ## Mandatory Safety Guardrails
 
@@ -88,7 +88,7 @@ Verify all 3 conditions from the JSON output before declaring success:
 
 1. If you created a temporary `git clone` directory in Step 1, remove that temporary directory now (the installed plugins and skills inside `~/.dsh` are 100% self-contained and do not depend on the checkout directory).
 2. Report concisely to the user:
-   - **Installed components**: `SuperAgent 1.22.1-dsh.1`, `Super Teams 0.14.1-dsh.1` (SQLite WAL `Engine 0.17.1-dsh.1`), and 4 verified skills.
+   - **Installed components**: `SuperAgent 1.23.0-dsh.1`, `Super Teams 0.15.0-dsh.1` (Shared Core `0.18.0` / SQLite WAL `Engine 0.18.0-dsh.1`), and 4 verified skills.
    - **Backup directory**: Path from `"backup"` in Step 3's JSON output.
    - **Next action required from user**: **Restart DeepSeek Harness once** to load the new plugins and right-sidebar「团队工作台」(Team Workbench), then type `/superagent-workflow` or click `+` → `SuperAgent 团队工作台` in any chat session.
 

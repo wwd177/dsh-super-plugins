@@ -1,14 +1,14 @@
 ---
 name: superagent-workflow
 metadata:
-  version: 1.22.1-dsh.1
+  version: 1.23.0-dsh.1
   host: DeepSeek Harness
-description: 负责复杂任务的目标拆解、证据驱动选路、多语言行为测试门禁、Git Worktree 协作集成与最终验收；需要多成员依赖编排时，交由 Super Teams 统一 SQLite 持久引擎（0.17.1-dsh.1）与右侧团队工作台执行。单一简单任务直接处理。
+description: 负责复杂任务的目标拆解、原话必达门禁冻结（R2）、不可变交付候选与增量修订编排（R3-R6）、只读 GitHub PR 对账（R7-R8）及最终集成验收；多成员编排运行在 SuperAgent 统一共享持久内核（Engine 0.18.0-dsh.1）与内置审阅工作台。单一简单任务直接处理。
 ---
 
-# SuperAgent 协作与交付（DeepSeek Harness 适配版 · 1.22.1-dsh.1）
+# SuperAgent 协作与交付（DeepSeek Harness 适配版 · 1.23.0-dsh.1）
 
-让用户以最少注意力获得经过真实行为核验的交付。**职责分工**：本技能定义**目标拆解、选路诊断、验收门禁与最终整合方法论**；多成员持久任务图与右侧「团队工作台」统一由 `super-teams` 的 **SQLite WAL 持久编排引擎（`0.17.1-dsh.1`）** 承载，不存在第二套手工镜像板。能力、权限与模型范围以当前 DeepSeek Harness 会话为准。
+让用户以最少注意力获得经过真实行为核验的交付。**产品定位（v0.18 单入口收敛）**：对外统一为 **SuperAgent**，`superagent-workflow` 负责执行协议与目标验收方法论，`Super Teams` 作为内置审阅与人工干预工作台，共用同一锁定版本的共享候选内核 `engine-core 0.18.0`（Engine `0.18.0-dsh.1`）与单一调度所有者，不存在第二套手工镜像板。能力、权限与模型范围以当前 DeepSeek Harness 会话为准。
 
 ## 1. 先定边界与最小行为验证
 
@@ -43,8 +43,10 @@ description: 负责复杂任务的目标拆解、证据驱动选路、多语言�
 ## 4. 证据验收、Git 合并与完整备份提醒
 
 - 沿「输入 → 生效规则 → 生产入口 → 输出 → 消费者」定位首次偏差并修源头；复杂根因与回归按需用 [workflow-quality](../workflow-quality/SKILL.md)。
-- **目标项目集成收口**：
-  - `git-worktree` 团队可先在工具或工作台执行 `engine_team({action:"merge_preview", teamId})` 在临时 detached worktree 预览冲突与 diff，再用 `engine_team({action:"merge_apply", teamId, branchName?, integrationCheck?})` 原子创建全新 `superagent/<slug>` 分支（绝不改动用户当前活工作树或既有分支），并在导出包中附带 `HANDOFF.md` 与 `changes.patch`；详见 [最终集成](references/integration.md)。
+- **目标项目集成与 v0.18 冻结交付候选（R2–R8）**：
+  - 建队筹备期可用 `engine_team({action:"criteria_preview"|"criteria_freeze", ...})` 冻结用户原话与必达清单，任何未映射的原话段落都会显式暴露，禁止空测试/跳过（`skipped`/`neutral`）或待签认满足必达项；
+  - `git-worktree` 团队用 `engine_team({action:"candidate_create", ...})` 生成抗 GC 的不可变冻结候选（含 `treeOid`/`commitOid`/`manifestHash`），再经 `candidate_approve` + `candidate_publish_local` 严格按绑定候选发布本地 `superagent/<slug>` 分支（批准 A 绝不能漂移发布 A+B，崩溃后用 `publish_reconcile` 精确对账，绝不改动活工作树或既有分支）；
+  - 远端/集成发现接口冲突时，保留原已验收任务快照不变，用 `engine_submit({revisionOfCandidateId, affectedTaskIds, ...})` 新建集成修订 `R1`，再生成 `C2 = C1 + R1.patch`（增量叠加并校验与全量重放同树）；用 `candidate_base_drift` 三方试合检测目标分支前进冲突；用 `pr_reconcile` 只读关联核实 GitHub PR（严格零写请求，远端合入事实与本地目标验收分离呈现）。详见 [最终集成](references/integration.md)。
   - 无论隔离模式还是 `git-worktree` 模式，子任务 `accepted` 快照均不替代目标项目最终集成行为终检。
 - **完整备份警告（切勿只复制 `engine.sqlite`）**：`engine.sqlite` 仅保存元数据、事件序列与状态索引，真实交付产物快照、Git 增量补丁、登记来源与运行目录分别落盘在 `artifact-snapshots/`、`git-patches/`、`context/` 与 `attempts/`。迁移或备份历史交付时**必须完整备份整个 `~/.dsh/profiles/<profile>/plugin-data/dsh-super-teams/` 目录**（含 `engine.sqlite` 及其 `-wal`/`-shm` 文件），仅复制 `engine.sqlite` 会丢失所有已冻结交付文件与补丁。详见 [安装、诊断与完整备份](references/engine-maintenance.md)。
 - 跨轮长任务用 [development-handoff](../development-handoff/SKILL.md) 维护紧凑交接；上下文与运行等待恢复见 [运行恢复](references/runtime-recovery.md)。来源与取舍见 [来源与取舍](references/sources.md)。

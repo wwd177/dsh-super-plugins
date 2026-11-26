@@ -59,6 +59,26 @@ const windowFields = {
   budgetBytes: z.number().int().min(1024).max(65536).optional(),
 };
 
+const goalCriterionSchema = z.object({
+  id: z.string().min(1).max(120).optional(),
+  requirementText: z.string().min(1).max(2000),
+  mandatory: z.boolean().optional(),
+  verificationMode: z.enum(['check', 'human_signoff']).optional(),
+  sourceSegmentIds: z.array(z.string().min(1).max(64)).max(16).optional(),
+  sourceQuote: z.string().min(1).max(2000).optional(),
+  checkId: z.string().min(1).max(120).optional(),
+  checkSpec: checkSchema.optional(),
+  taskId: z.string().min(1).max(120).optional(),
+  signoffRole: z.string().min(1).max(120).optional(),
+}).strict();
+
+const unmappedDispositionSchema = z.object({
+  segmentId: z.string().min(1).max(64),
+  action: z.enum(['deferred', 'out_of_scope', 'merged_into_criterion']),
+  reason: z.string().min(1).max(1000),
+  criterionId: z.string().min(1).max(120).optional(),
+}).strict();
+
 const primaryRawDefinitions = [
   [
     'engine_workspace',
@@ -69,17 +89,38 @@ const primaryRawDefinitions = [
   ],
   [
     'engine_team',
-    'Manage durable SQLite-persisted teams (engine.sqlite WAL, survives DeepSeek Harness restarts). Use action=prepare to atomically create a paused team with 1-24 DAG tasks (isolated or git-worktree mode with repoPath, priority, runtime-locked writeScopes, maxRetries, and behavioral node_test/command_test checks for autoAccept) and open the right-sidebar workbench; then resume when ready. Supports prepare, create, list, overview (attentionOnly), graph (CPM waves/critical path/scope overlap), accept_checked, merge_preview, merge_apply (atomic superagent/<slug> branch publish), pause, resume, cancel, archive and unarchive.',
+    'Manage durable SQLite-persisted teams, frozen goal criteria (R2), immutable delivery candidates & bound approvals (R3-R6), atomic local branch publish, and read-only GitHub PR reconciliation (R7-R8) in the single engine store.',
     z.object({
-      action: z.enum(['prepare', 'create', 'list', 'overview', 'graph', 'accept_checked', 'merge_preview', 'merge_apply', 'pause', 'resume', 'cancel', 'archive', 'unarchive']),
+      action: z.enum(['prepare', 'create', 'list', 'overview', 'graph', 'accept_checked', 'merge_preview', 'merge_apply', 'criteria_get', 'criteria_preview', 'criteria_freeze', 'criteria_signoff', 'candidate_create', 'candidate_list', 'candidate_get', 'candidate_approve', 'approval_revoke', 'candidate_publish_local', 'publish_reconcile', 'candidate_base_drift', 'pr_reconcile', 'pause', 'resume', 'cancel', 'archive', 'unarchive']),
       teamId: z.string().optional(),
       requestId: z.string().optional(),
       name: z.string().optional(),
       goal: z.string().optional(),
+      rawGoal: z.string().optional(),
       workspaceMode: z.enum(['isolated', 'git-worktree']).optional(),
       repoPath: z.string().min(1).max(1000).optional(),
       branchName: z.string().min(1).max(100).optional(),
+      targetRef: z.string().min(1).max(200).optional(),
       integrationCheck: checkSchema.optional(),
+      criteria: z.array(goalCriterionSchema).max(32).optional(),
+      dispositions: z.array(unmappedDispositionSchema).max(32).optional(),
+      confirmedBy: z.string().min(1).max(200).optional(),
+      criterionId: z.string().min(1).max(120).optional(),
+      signer: z.string().min(1).max(200).optional(),
+      note: z.string().max(2000).optional(),
+      candidateId: z.string().min(1).max(120).optional(),
+      parentCandidateId: z.string().min(1).max(120).optional(),
+      taskIds: z.array(z.string().min(1)).max(64).optional(),
+      approvalId: z.string().min(1).max(120).optional(),
+      purpose: z.enum(['local_publish', 'draft_pr', 'request_merge']).optional(),
+      reason: z.string().max(2000).optional(),
+      repo: z.string().min(1).max(200).optional(),
+      prNumber: z.number().int().min(1).optional(),
+      headRepo: z.string().min(1).max(200).optional(),
+      headBranch: z.string().min(1).max(200).optional(),
+      baseBranch: z.string().min(1).max(200).optional(),
+      expectedIntentId: z.string().min(1).max(120).optional(),
+      linkId: z.string().min(1).max(120).optional(),
       members: z.array(z.object({
         name: z.string().min(1),
         role: z.string().min(1),
@@ -92,7 +133,7 @@ const primaryRawDefinitions = [
   ],
   [
     'engine_submit',
-    'Submit one persistent task into engine.sqlite with stable requestId, difficulty, optional priority/writeScopes/autoAccept/maxRetries, same-team dependencies, sources and objective checks (file_exists, file_contains, json_equals, node_test, command_test). autoAccept=true strictly requires at least one immutable node_test check; command_test reaches "checked" state for explicit review/accept.',
+    'Submit one persistent task or integration revision task (via revisionOfCandidateId + affectedTaskIds on git-worktree teams) into engine.sqlite with stable requestId, difficulty, optional priority/writeScopes/autoAccept/maxRetries, dependencies, sources and objective checks.',
     z.object({
       requestId: z.string().min(1),
       title: z.string().min(1),
@@ -103,6 +144,8 @@ const primaryRawDefinitions = [
       dependsOn: z.array(z.string()).optional(),
       sourceIds: z.array(z.string()).optional(),
       checks: z.array(checkSchema).optional(),
+      revisionOfCandidateId: z.string().min(1).max(100).optional(),
+      affectedTaskIds: z.array(z.string().min(1)).max(32).optional(),
       ...schedulingFields,
     }).strict(),
   ],

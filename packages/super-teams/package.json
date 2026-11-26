@@ -1,11 +1,11 @@
 {
   "name": "@local/dsh-super-teams",
-  "version": "0.14.1-dsh.1",
+  "version": "0.15.0-dsh.1",
   "private": true,
   "type": "module",
   "license": "MIT",
   "icon": "./assets/icon.svg",
-  "description": "Super Teams · DeepSeek Harness 跨平台通用版（内置 SQLite 持久 DAG 编排引擎 0.17.1-dsh.1、Git Worktree 协作与多语言行为测试门禁）",
+  "description": "SuperAgent 内置审阅工作台与共享持久引擎 · DeepSeek Harness 跨平台通用版（Engine 0.18.0-dsh.1，含共享候选内核、目标原话门禁、冻结交付候选、增量修订与只读 GitHub PR 对账）",
   "engines": {
     "node": ">=22.13.0",
     "dsh": ">=0.2.0-rc.1 <0.3.0-0"
