@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-27T12:48:24.996Z",
+  "generatedAt": "2026-11-27T12:52:20.206Z",
   "versions": {
     "engine": "0.20.1-dsh.1",
     "superagent": "1.25.1-dsh.1",
@@ -104,11 +104,11 @@
     "packages/superagent/skills/workflow-quality/SKILL.md": "90b77c3054c424f2ca9923f82d3f6796b63081cb503abd30e26eccb39f153659",
     "README.en.md": "09d7afd226fe594b0748185e1454715bfc8440c24ef097d8689fa7d4c41c1990",
     "README.md": "6bbd2d8d9b94b09e9bc7c4ab69130ce1c0422b6b8d8a954ef569f8de47e0ff32",
-    "scripts/install.mjs": "38e14c66368b6fae305dc830c2bbce44692d800adc459c8671d26cf03cd0fbf6",
+    "scripts/install.mjs": "39d0dcf422920cc1155c32119c7ec04f47ef7610fdac21c39e3aed32665963a6",
     "scripts/verify-release-manifest.mjs": "0d2872b40a84b18fa625f1719a958c4d7360870fc09138f118a38884bc69bca9",
     "skills/dsh-super-plugins-installer/references/platform-paths.md": "32f863cbd88b09209f72cbecf94e73144695c4ed2d7ae9bfb467abfe5929a5f0",
     "skills/dsh-super-plugins-installer/references/troubleshooting.md": "ddb389b3090632396e56066b83c3ffa2bfb74f892632c623c91458128fb6cae5",
-    "skills/dsh-super-plugins-installer/SKILL.md": "3858c3074c69de3b279ce7bd165d02519a7835d63d006da62ef8bf3afce51fe7",
+    "skills/dsh-super-plugins-installer/SKILL.md": "85eca92953e6c3bf2f644ec2323788c9b5740b941d76b223ae0641b4c4718892",
     "tests/board.test.mjs": "8cfeced1745240c751b9b56bdb4abad0b3eaabd05b975e653b30bea2cd93154f",
     "tests/dsh-runtime.test.mjs": "f2051df7b64762fa7bd4b2e8eb6b2c15243ada50ad8f9ce7be4de07625a60215",
     "tests/dsh-ui-smoke.mjs": "4b17354cb3fe0ca26940dd06f581645d20bfa62cb5f928ac3e95f49f9563e9ae",

@@ -10,9 +10,9 @@ import { fileURLToPath } from 'node:url';
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
 
-const ENGINE_VERSION = '0.20.0-dsh.1';
-const SUPERAGENT_VERSION = '1.25.0-dsh.1';
-const SUPER_TEAMS_VERSION = '0.17.0-dsh.1';
+const ENGINE_VERSION = '0.20.1-dsh.1';
+const SUPERAGENT_VERSION = '1.25.1-dsh.1';
+const SUPER_TEAMS_VERSION = '0.17.1-dsh.1';
 
 const PLUGIN_NAMES = ['@local/dsh-superagent-menu', '@local/dsh-super-teams'];
 const SKILL_ENTRIES = [
