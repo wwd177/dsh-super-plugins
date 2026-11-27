@@ -1,20 +1,20 @@
 {
-  "coreVersion": "0.19.1",
+  "coreVersion": "0.19.2",
   "protocol": "superagent-delivery-v0.19",
   "fileCount": 12,
-  "bundleSha256": "34ecea9968091d37e91806d83a1c0a70b112cfbb8ac258e555ba884d676db456",
+  "bundleSha256": "f45ceb10095469f6b1130f683b38f219313572565b2363b82d34ba1d65d233b3",
   "files": {
     "index.mjs": "bc0eedfe32e88ccd04346010ae4495e762de4a69a838149ea4e64d16fa161ffb",
     "src/bench-harness.mjs": "1fb9e3a787c533e2fb8ffdf757298cc1e9fed86a73edb1c6913f3a1b60710a23",
-    "src/budget-guard.mjs": "0cf3af4ec154b47ebfd75f670d26822f97d519389762111c674d13a761e00d09",
-    "src/core-version.mjs": "ff1d942a38ed911f744419fdf85f73d57900749dbcdd9256ea77903eca35d190",
-    "src/delivery-candidate.mjs": "350974acbe1fa314cfa8cc6ed57d417214ef3311129d1f7323ad1838762bbbdb",
-    "src/delivery-service.mjs": "dcb0ef6a5255a242916c7b6b62c6a64fff03616a953c0fa5a7fcf16b04cc9cbc",
+    "src/budget-guard.mjs": "f74804ef0ccb7b732f5f10feac72a7b5bfb8d2df5aa6e5d5d92c154a312f9a05",
+    "src/core-version.mjs": "503766b6b95ba1011a1a6b669091f615ea6df6ec0a82daab422b7805493abce5",
+    "src/delivery-candidate.mjs": "8a7d4e378a6c098b82f9fff92b5fbf2cd9cdfc410f82f194c03cd25bdebe6287",
+    "src/delivery-service.mjs": "745648fc72c3e16f4d70521b003b4dbda5307e7100c53bd1acb076679179e4cd",
     "src/env-recipe.mjs": "349c721dcd14a1a920dd71857fa4e09d01e3287874b36c51c621685e61d24a28",
-    "src/git-worktree.mjs": "cb1d6396295cfb934f00a09a3ef51779aa4b88c947ca6031fc0668f4baaa1611",
-    "src/github-readonly.mjs": "243e33948394dd37598a36482980b01a500ea68e14ebd6851f448d033c025b8b",
+    "src/git-worktree.mjs": "1060174b0ff486fa6f3ec513ce0e6d7d48aa3c70e734226c0b13501d5f3c3058",
+    "src/github-readonly.mjs": "7bc6689ce2fee693cf7fad73aa5d7689a31c5232ff0f5ba0fb29aad44c46c9a8",
     "src/goal-criteria.mjs": "e0a769201a8a54ce5dcf52c62fd707de6c37a7c5d108fdfd1251f16a70e0ff9d",
-    "src/process-isolation.mjs": "591978104fd46ca8fd47bd868609a9bc85653ed57326a6c2cf6ece7d6dc33fc7",
-    "src/remote-delivery.mjs": "cc6a74a27769aee84a55ffe0cf8134723da01e12795aae049eafd5f8e4c8781e"
+    "src/process-isolation.mjs": "4bf0f805de3fdcf4b356ea587bc9af2ffdd455ad013cf4433f59382159f7ce42",
+    "src/remote-delivery.mjs": "3947d7562b662ed3e7adecf804cda3b76ae90855b81f53cc8e50af66ce74e1b4"
   }
 }

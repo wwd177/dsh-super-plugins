@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.20.3-dsh.1 (SuperAgent `1.25.3-dsh.1` / Super Teams `0.17.3-dsh.1` / Shared Core `0.19.2` / Installer Skill `1.4.0`)
+
+Completes a full dual-ecosystem bug hunt, security hardening, and reliability polish across Shared Core `0.19.2`, DSH Engine/Adapter/HTTP/UI, and cross-platform installer:
+
+- **Shared Core `0.19.2`**: Fixes case-insensitive Windows `Path` inheritance in isolated test environments, enforces `git-worktree` explicit `expectedOldOid` validation and conflict-free preview refs, hardens GitHub slug/SHA validation and `checksSummary` pending/failing gating in `effectiveGoalPassed`, commits `budget_exceeded:attempts` before throwing, blocks concurrent `pending_remote` pushes while adding read-only `ls-remote` push reconciliation, and prevents duplicate PR failure event IDs (`-r2`, `-r3`).
+- **Engine, Adapter & HTTP (`engine.mjs`, `store.mjs`, `delivery-export.mjs`, `verification.mjs`, `dsh-http.mjs`, `dsh-adapter.mjs`)**:
+  - Includes normalized `budget` and `allowedRemoteRepos` in `createTeam` idempotency fingerprint and commits initial budget inside the same SQLite transaction; adds budget preflight before worktree creation (zero orphan worktrees); enforces deterministic duration watchdog outcome (`status: 'failed'` when local PIDs verified dead vs `'unknown'` with retained slot and `willAutoRetry: false` when uncertified); releases slots on `resolveUnresolved`; clears stale attempt fields on `rework`; caps `refusal_log` at 500 rows with bounded payloads; orders revision tasks after referenced candidate tasks in `mergeTeam`.
+  - Uses `realpath(os.tmpdir())` and excludes volatile live activity/budget counters from delivery export fingerprints; hardens `dotnet` and `npm` `command_test` flags and cmd metacharacters.
+  - Maps missing PR write transport on `/api/teams/:id/remote/pr-create` to HTTP `501` (`REMOTE_PR_TRANSPORT_UNAVAILABLE`), destroys timed-out JSON request streams cleanly, enforces origin checks in fenced mode, caps `dsh-adapter` model cache without caching fallbacks, and adds close/callback guards in `start()`.
+- **Workbench UI, Tool Schemas & Installer (`definitions.mjs`, `runtime.mjs`, `dist/tool-schemas.mjs`, `public/app.js`, `scripts/install.mjs`)**:
+  - Preserves exact 8 top-level tools while adding `headSha` and `resolveAction` to `engine_team` and `expectedOldOid` forwarding on `candidate_publish_local`; rebuilds zero-dependency `dist/tool-schemas.mjs`.
+  - Submits initial create-team budget atomically, preserves `maxInFlight`/`sameErrorBreakerThreshold` on budget save, prevents auto-injecting chat `sessionId` onto team `/tasks` mutations, hardens `startChangesPoll` baseline/concurrency, and cleanly detaches `matchMedia`/DOM theme listeners on unmount.
+  - Validates safe single-segment `--profile`, rejects stray files during `--verify`, checks/removes junctions/symlinks inside `syncPlainTreeInPlace`, falls back on `EXDEV`, unconditionally restores backed-up skills on rollback, and uses retry removal during uninstall.
+
 ## v0.20.2-dsh.1 (SuperAgent `1.25.2-dsh.1` / Super Teams `0.17.2-dsh.1` / Shared Core `0.19.1` / Installer Skill `1.4.0`)
 
 Fixes DeepSeek Harness Desktop (`dsh-app://app/`) workbench loading failures caused by a Cordis service-injection startup race and hardens desktop asset/ZIP delivery:

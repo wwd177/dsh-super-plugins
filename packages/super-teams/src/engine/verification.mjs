@@ -136,6 +136,13 @@ export function validateCommandTest(check) {
     }
   } else if (cmd === 'dotnet') {
     if (args[0] !== 'test') throw new Error('command_test with "dotnet" must start with "test"');
+    const DOTNET_FORBIDDEN_FLAGS = new Set(['-p', '--property', '/p', '-t', '--target', '/t', '--test-adapter-path', '--settings', '-s', '--diag', '--logger', '--results-directory', '-r', '--msbuildprojectextensionspath', '--binarylogger', '-bl']);
+    for (const arg of args) {
+      const f = flagName(arg);
+      if (DOTNET_FORBIDDEN_FLAGS.has(f) || /^(?:-|\/)(?:p|property|t|target)(?:[:=]|$)/i.test(arg)) {
+        throw new Error(`command_test with "dotnet" forbids flag: ${arg}`);
+      }
+    }
   } else if (cmd === 'npm') {
     const validTest = args[0] === 'test';
     const validRunTest = args[0] === 'run' && typeof args[1] === 'string' && /^test(?:[:_-][a-z0-9_-]+)?$/i.test(args[1]);
@@ -144,6 +151,7 @@ export function validateCommandTest(check) {
     }
     for (const arg of args) {
       if (NPM_FORBIDDEN_FLAGS.has(flagName(arg))) throw new Error(`command_test with "npm" forbids flag: ${arg}`);
+      if (/[&|<>^%!"`\r\n]/.test(arg)) throw new Error(`command_test with "npm" forbids shell metacharacters in argument: ${arg}`);
     }
   }
 
@@ -240,6 +248,9 @@ function resolveWindowsNpmLaunch(args) {
   }
   const npmCmdDir = pathDirs.find(dir => fs.existsSync(path.join(dir, 'npm.cmd')));
   if (npmCmdDir) {
+    for (const arg of args) {
+      if (/[&|<>^%!"`\r\n]/.test(arg)) throw new Error(`Unsafe cmd metacharacter in npm argument: ${arg}`);
+    }
     // Fallback without shell interpolation of untrusted characters: pass npm.cmd and each arg via env vars to cmd /d /s /c.
     const npmCmdPath = path.join(npmCmdDir, 'npm.cmd');
     const extraEnv = { __SA_NPM_CMD: npmCmdPath };

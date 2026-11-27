@@ -135,6 +135,8 @@ const primaryRawDefinitions = [
       remoteUrl: z.string().min(1).max(1000).optional(),
       stableBranch: z.string().min(1).max(200).optional(),
       expectedOldOid: z.string().min(1).max(120).optional(),
+      headSha: z.string().min(1).max(120).optional(),
+      resolveAction: z.enum(['bind_existing', 'abandon', 'adopt_as_candidate', 'redirect_new_branch']).optional(),
       title: z.string().min(1).max(300).optional(),
       body: z.string().max(8000).optional(),
       draft: z.boolean().optional(),

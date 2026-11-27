@@ -179,9 +179,9 @@ export class DeliveryService {
     const acceptedPool = allTasks.filter(t => t.state === 'accepted');
     let selectedTasks;
     if (Array.isArray(taskIds) && taskIds.length > 0) {
-      const idSet = new Set(taskIds.map(String));
+      const uniqueIds = [...new Set(taskIds.map(String))];
       const found = [];
-      for (const id of taskIds) {
+      for (const id of uniqueIds) {
         const task = allTasks.find(t => t.id === id);
         if (!task) throw new Error(`Task not found in team: ${id}`);
         if (task.state !== 'accepted') throw new Error(`Task ${id} is in state "${task.state}", must be "accepted"`);
@@ -191,10 +191,6 @@ export class DeliveryService {
       const regular = this.engine._topoSortTasks(found.filter(t => !t.revisionOfCandidateId));
       const revisions = found.filter(t => Boolean(t.revisionOfCandidateId));
       selectedTasks = [...regular, ...revisions];
-      // 若调用方传入了显式 taskIds 集合，确保无遗漏
-      if (selectedTasks.length !== idSet.size) {
-        selectedTasks = found;
-      }
     } else {
       const regular = this.engine._topoSortTasks(acceptedPool.filter(t => !t.revisionOfCandidateId));
       const revisions = acceptedPool
@@ -399,13 +395,27 @@ export class DeliveryService {
         );
       }
       const frozenCriteria = this.store.latestGoalCriteria(team.id);
-      if (frozenCriteria && candidate.gateHash && frozenCriteria.gateHash !== candidate.gateHash) {
+      if (frozenCriteria && candidate.gateHash !== frozenCriteria.gateHash) {
         throw Object.assign(
           new Error('Goal criteria gate changed after this candidate was built; create a new candidate before approving'),
           { code: 'CANDIDATE_GATE_STALE' },
         );
       }
-      if (requireGoalPassed && !candidate.goalEvaluation?.goalPassed) {
+      const allTasks = this.store.teamTasks(team.id);
+      const signoffs = this.store.criteriaSignoffs(team.id);
+      const checkEvidence = {};
+      if (candidate.integrationCheck) {
+        checkEvidence.__integration__ = candidate.integrationCheck;
+        checkEvidence.integration = candidate.integrationCheck;
+      }
+      const liveGoalEvaluation = evaluateGoalCriteria({
+        frozenCriteria,
+        candidate,
+        tasks: allTasks,
+        checkEvidence,
+        signoffs,
+      });
+      if (requireGoalPassed && !liveGoalEvaluation.goalPassed) {
         throw Object.assign(
           new Error(`Candidate ${candidate.id} has unsatisfied mandatory goal criteria and cannot be approved`),
           { code: 'GOAL_CRITERIA_NOT_MET' },
@@ -414,6 +424,16 @@ export class DeliveryService {
       let resolvedTargetRef = targetRef ? String(targetRef).trim() : null;
       if (purpose === 'local_publish') {
         const sanitized = sanitizeSuperagentBranch(branchName ?? (resolvedTargetRef || null), team.id);
+        resolvedTargetRef = sanitized.ref;
+      } else if (purpose === 'remote_push') {
+        const targetCandidate = branchName ?? (resolvedTargetRef || null);
+        if (targetCandidate && targetCandidate.startsWith('refs/') && !targetCandidate.startsWith('refs/heads/superagent/')) {
+          throw Object.assign(
+            new Error(`Remote push approval targetRef must stay under refs/heads/superagent/* (got "${targetCandidate}")`),
+            { code: 'REMOTE_TARGET_REF_FORBIDDEN' },
+          );
+        }
+        const sanitized = sanitizeSuperagentBranch(targetCandidate, team.id);
         resolvedTargetRef = sanitized.ref;
       } else if (!resolvedTargetRef) {
         resolvedTargetRef = candidate.targetRef;
@@ -557,6 +577,23 @@ export class DeliveryService {
     };
     this.store.saveCandidate(freshCandidate);
 
+    const frozenCriteria = this.store.latestGoalCriteria(team.id);
+    const allTasks = this.store.teamTasks(team.id);
+    const signoffs = this.store.criteriaSignoffs(team.id);
+    const checkEvidence = {};
+    if (freshCandidate.integrationCheck) {
+      checkEvidence.__integration__ = freshCandidate.integrationCheck;
+      checkEvidence.integration = freshCandidate.integrationCheck;
+    }
+    const liveEval = evaluateGoalCriteria({
+      frozenCriteria,
+      candidate: freshCandidate,
+      tasks: allTasks,
+      checkEvidence,
+      signoffs,
+    });
+    const effectiveGoalPassed = Boolean(liveEval.goalPassed);
+
     const freshTeam = this._team(team.id);
     freshTeam.lastLocalPublish = {
       at: ts,
@@ -568,7 +605,7 @@ export class DeliveryService {
       baseCommit: freshCandidate.baseCommit,
       taskIds: freshCandidate.entries.map(e => e.taskId),
       isPartial: freshCandidate.isPartial,
-      goalPassed: Boolean(freshCandidate.goalEvaluation?.goalPassed),
+      goalPassed: effectiveGoalPassed,
       remoteMerged: false,
     };
     // 兼容历史字段名，但明确标注仅代表本地分支已创建，绝非远端 PR 已合入
@@ -595,7 +632,7 @@ export class DeliveryService {
       commitOid: published.commitOid,
       treeOid: freshCandidate.treeOid,
       isPartial: freshCandidate.isPartial,
-      goalPassed: Boolean(freshCandidate.goalEvaluation?.goalPassed),
+      goalPassed: effectiveGoalPassed,
       note: `已仅使用冻结候选 ${freshCandidate.id} 原子创建本地分支 ${published.branch}（${published.commitOid.slice(0, 12)}）。本地分支创建不代表远端 PR 已合入，活动工作树与既有用户分支未受改动。`,
     };
   }

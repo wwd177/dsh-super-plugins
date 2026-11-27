@@ -317,6 +317,7 @@ window.__ModuleLoader__.load({
             }, () => React.createElement('span', null, '团队工作台'))
           ), 'superagent-workbench: tab title');
 
+          sctx.effect(() => () => { openInRightSidebar = null; }, 'superagent-workbench: sidebar cleanup');
           openInRightSidebar = sessionId => {
             const activeTarget = sctx.sidebarRight.commandTarget?.(document.activeElement);
             const target = sessionId

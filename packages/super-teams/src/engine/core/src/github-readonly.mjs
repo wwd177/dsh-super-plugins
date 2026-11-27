@@ -2,6 +2,31 @@ import { execFile } from 'node:child_process';
 
 const INTENT_MARKER_RE = /<!--\s*superagent-intent:([a-zA-Z0-9._:-]+)\s*-->/;
 const MAX_PAGES = 10;
+const REPO_SEG_RE = /^[A-Za-z0-9._-]+$/;
+const SHA_RE = /^[a-f0-9]{7,64}$/i;
+
+export function validateRepoSlug(repo) {
+  if (typeof repo !== 'string') {
+    throw Object.assign(new Error('repo must be in "owner/name" format'), { code: 'INVALID_REPO' });
+  }
+  const trimmed = repo.trim();
+  const parts = trimmed.split('/');
+  if (
+    parts.length !== 2 ||
+    parts.some(seg => !REPO_SEG_RE.test(seg) || seg === '.' || seg === '..')
+  ) {
+    throw Object.assign(new Error('repo must be in strict "owner/name" format without path traversal'), { code: 'INVALID_REPO' });
+  }
+  return trimmed;
+}
+
+export function validateCommitSha(sha) {
+  const trimmed = typeof sha === 'string' ? sha.trim() : '';
+  if (!SHA_RE.test(trimmed)) {
+    throw Object.assign(new Error('sha must be a 7..64-character hexadecimal commit hash'), { code: 'INVALID_SHA' });
+  }
+  return trimmed;
+}
 
 export function extractIntentMarker(body) {
   const match = INTENT_MARKER_RE.exec(String(body ?? ''));
@@ -25,19 +50,24 @@ export function createGhReadOnlyTransport({ execFn = execFile, timeoutMs = 15000
 
   return {
     async getPullRequest({ repo, prNumber }) {
-      const pr = await runGhJson(['api', '--method', 'GET', `repos/${repo}/pulls/${prNumber}`]);
+      const safeRepo = validateRepoSlug(repo);
+      if (!Number.isInteger(prNumber) || prNumber < 1) throw new Error('prNumber must be a positive integer');
+      const pr = await runGhJson(['api', '--method', 'GET', `repos/${safeRepo}/pulls/${prNumber}`]);
       return normalizeGitHubPr(pr);
     },
     async listPullRequests({ repo, state = 'all', head = null, base = null, page = 1, perPage = 50 }) {
+      const safeRepo = validateRepoSlug(repo);
       const params = new URLSearchParams({ state, page: String(page), per_page: String(perPage) });
       if (head) params.set('head', head);
       if (base) params.set('base', base);
-      const list = await runGhJson(['api', '--method', 'GET', `repos/${repo}/pulls?${params.toString()}`]);
+      const list = await runGhJson(['api', '--method', 'GET', `repos/${safeRepo}/pulls?${params.toString()}`]);
       return Array.isArray(list) ? list.map(normalizeGitHubPr) : [];
     },
     async listCheckRuns({ repo, sha }) {
       if (!sha) return [];
-      const data = await runGhJson(['api', '--method', 'GET', `repos/${repo}/commits/${sha}/check-runs`]);
+      const safeRepo = validateRepoSlug(repo);
+      const safeSha = validateCommitSha(sha);
+      const data = await runGhJson(['api', '--method', 'GET', `repos/${safeRepo}/commits/${safeSha}/check-runs`]);
       const runs = Array.isArray(data?.check_runs) ? data.check_runs : (Array.isArray(data) ? data : []);
       return runs.map(normalizeCheckRun);
     },
@@ -121,9 +151,8 @@ export async function reconcileGitHubPrReadOnly({
   goalEvaluation = null,
   transport,
 }) {
-  if (!repo || typeof repo !== 'string' || !repo.includes('/')) {
-    throw new Error('repo must be in "owner/name" format');
-  }
+  const safeRepo = validateRepoSlug(repo);
+  repo = safeRepo;
   if (!transport || typeof transport.getPullRequest !== 'function' || typeof transport.listPullRequests !== 'function') {
     throw new Error('A read-only GitHub transport (getPullRequest, listPullRequests) is required');
   }
@@ -238,7 +267,11 @@ export async function reconcileGitHubPrReadOnly({
   const externalDrift = Boolean(versionMismatch);
 
   // R7 硬不变量：PR 已合入 B 但本地只验收 A，界面同时呈现两个事实，目标绝不能自动变绿
-  const effectiveGoalPassed = localGoalPassed && !versionMismatch && !checksSummary.hasSkippedOrNeutral;
+  const effectiveGoalPassed = localGoalPassed
+    && !versionMismatch
+    && !checksSummary.hasSkippedOrNeutral
+    && checksSummary.failingCount === 0
+    && checksSummary.pendingCount === 0;
 
   return {
     ok: true,

@@ -37,8 +37,8 @@ export async function createDeliveryExport({ engine, teamId, signal, limits: req
     cleaned = true;
     try {
       if (temporary) {
-        const info = await fsp.lstat(temporary);
-        if (info.isSymbolicLink() || !info.isDirectory() || path.dirname(temporary) !== path.resolve(os.tmpdir()) || !path.basename(temporary).startsWith('superagent-delivery-')) throw new Error('Unsafe delivery cleanup path');
+        const [info, tmpRoot] = await Promise.all([fsp.lstat(temporary), fsp.realpath(os.tmpdir())]);
+        if (info.isSymbolicLink() || !info.isDirectory() || path.dirname(temporary) !== tmpRoot || !path.basename(temporary).startsWith('superagent-delivery-')) throw new Error('Unsafe delivery cleanup path');
         await fsp.rm(temporary, { recursive: true });
       }
     } finally { active.delete(engine); }
@@ -58,10 +58,28 @@ export async function createDeliveryExport({ engine, teamId, signal, limits: req
       if (!Array.isArray(team.tasks) || team.tasks.length > limits.maxTasks) fail(413, `交付报告最多支持 ${limits.maxTasks} 个任务，未进行截断`);
       return structuredClone({ ...team, tasks: team.tasks.map(task => engine.get(task.id)) });
     };
-    const captured = capture(), fingerprint = JSON.stringify(captured);
+    const deliveryFingerprintPayload = team => ({
+      id: team.id,
+      revision: team.revision,
+      control: team.control,
+      baseCommit: team.baseCommit ?? null,
+      lastMerge: team.lastMerge ?? null,
+      members: (team.members ?? []).map(m => ({ id: m.id, state: m.state, taskIds: m.taskIds ?? [] })),
+      tasks: (team.tasks ?? []).map(t => ({
+        id: t.id,
+        revision: t.revision,
+        state: t.state,
+        executionUnresolved: t.executionUnresolved,
+        completionStatus: t.completionStatus,
+        resultSha256: t.resultSha256,
+        acceptance: t.acceptance ?? null,
+        verification: t.verification ?? null,
+      })),
+    });
+    const captured = capture(), fingerprint = JSON.stringify(deliveryFingerprintPayload(captured));
     const assertCurrent = () => {
       checkAbort();
-      let current; try { current = JSON.stringify(capture()); } catch { fail(409, '团队或任务版本在导出期间变化，请重新导出'); }
+      let current; try { current = JSON.stringify(deliveryFingerprintPayload(capture())); } catch { fail(409, '团队或任务版本在导出期间变化，请重新导出'); }
       if (current !== fingerprint) fail(409, '团队或任务版本在导出期间变化，请重新导出');
     };
     const tasks = [...captured.tasks].sort((a, b) => priority(a) - priority(b));
@@ -91,7 +109,8 @@ export async function createDeliveryExport({ engine, teamId, signal, limits: req
     }
     if (entryCount === 2) fail(400, '已验收快照没有可导出的文件或冻结结果');
     checkAbort();
-    temporary = await fsp.mkdtemp(path.join(path.resolve(os.tmpdir()), 'superagent-delivery-'));
+    const tmpRoot = await fsp.realpath(os.tmpdir());
+    temporary = await fsp.mkdtemp(path.join(tmpRoot, 'superagent-delivery-'));
     const payload = path.join(temporary, 'payload'); await fsp.mkdir(payload);
     const files = [];
     for (const task of accepted) {

@@ -583,7 +583,14 @@ export async function publishFrozenCandidateRef({
     }
   }
 
-  const expected = expectedOldOid && OID_RE.test(expectedOldOid) ? expectedOldOid : ZERO_OID;
+  const hasExplicitOld = expectedOldOid !== undefined && expectedOldOid !== null && String(expectedOldOid).trim() !== '';
+  if (hasExplicitOld && !OID_RE.test(String(expectedOldOid).trim())) {
+    throw Object.assign(
+      new Error(`Invalid expectedOldOid: "${String(expectedOldOid)}"`),
+      { code: 'INVALID_EXPECTED_OLD_OID' },
+    );
+  }
+  const expected = hasExplicitOld ? String(expectedOldOid).trim() : ZERO_OID;
   const publishRes = await runGit(['update-ref', targetRef, commitOid, expected], { cwd: repoPath });
   if (publishRes.code !== 0) {
     const detail = (publishRes.stderr || publishRes.stdout.toString('utf8')).trim().slice(0, 400);
@@ -687,6 +694,7 @@ export async function assembleCandidateCommit({
   evidenceDir = null,
   runIntegrationCheck = null,
   verifyFullReplayEquivalence = true,
+  pinRef = true,
 }) {
   const repoInfo = await validateGitRepo(repoPath, dataDir);
   if (!OID_RE.test(baseCommit ?? '')) throw new Error('Team is missing a valid baseCommit');
@@ -831,7 +839,7 @@ export async function assembleCandidateCommit({
     }
   }
 
-  const pinRef = await pinCandidateRef({ repoPath: repoInfo.repoPath, candidateId, commitOid: primaryResult.commitOid });
+  const pinRefValue = pinRef ? await pinCandidateRef({ repoPath: repoInfo.repoPath, candidateId, commitOid: primaryResult.commitOid }) : null;
 
   return {
     ok: integrationResult ? integrationResult.passed : true,
@@ -842,7 +850,7 @@ export async function assembleCandidateCommit({
     parentCommitOid: plan.mode === 'incremental_revision' ? plan.parentCommitOid : baseCommit,
     treeOid: primaryResult.treeOid,
     commitOid: primaryResult.commitOid,
-    pinRef,
+    pinRef: pinRefValue,
     replayTreeVerified,
     entries: loaded.map(({ patchBytes: _ignored, ...meta }) => meta),
     incrementalDiffStat: plan.mode === 'incremental_revision' ? primaryResult.diffStat : null,
@@ -886,6 +894,12 @@ export async function probeBaseDrift({ repoPath, baseCommit, targetRef = 'HEAD',
         ? `目标分支已从 ${baseCommit.slice(0, 12)} 前进至 ${targetCommit.slice(0, 12)}，三方试合无冲突，双方改动均已保留。`
         : '目标分支未前进，与候选完全一致。',
     };
+  }
+
+  // 仅当 git merge-tree 退出码为 1 时才代表真实三方合并冲突；其他非 0 退出码属于 git 命令/引用错误，必须直接抛出
+  if (mt.code !== 1) {
+    const errDetail = (mt.stderr || stdoutText || '').trim().slice(0, 600);
+    throw new Error(`git merge-tree failed (code ${mt.code})${errDetail ? `: ${errDetail}` : ''}`);
   }
 
   // 解析 `git merge-tree --write-tree --name-only --messages` 输出中的冲突路径列表
@@ -942,6 +956,7 @@ export async function runTeamMerge({
     evidenceDir,
     runIntegrationCheck,
     verifyFullReplayEquivalence: false,
+    pinRef: apply === true,
   });
 
   if (!assembled.ok) {

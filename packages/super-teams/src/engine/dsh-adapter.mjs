@@ -474,8 +474,9 @@ export class DshAdapter {
       ? this.resolveRootAgent(req)
       : (cleanSessionId(this.preferredSessionId) ? this.resolveRootAgent(this.preferredSessionId) : null) ?? this.resolveRootAgent(null);
     const cacheKey = root?.id ?? (req ? `offline:${req}` : '__catalog__');
-    if (this._modelsCache && this._modelsCache.key === cacheKey && Date.now() < this._modelsCache.expiresAt) {
-      return structuredClone(this._modelsCache.models);
+    const cached = this._modelsCacheMap?.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) {
+      return structuredClone(cached.models);
     }
     const { llm, sessionController } = this._services();
     const list = [];
@@ -573,8 +574,16 @@ export class DshAdapter {
         isDefault: true,
         supportedReasoningEfforts: ['default'],
       });
+    } else {
+      this._modelsCacheMap ??= new Map();
+      if (this._modelsCacheMap.has(cacheKey)) this._modelsCacheMap.delete(cacheKey);
+      if (this._modelsCacheMap.size >= 64) {
+        this._modelsCacheMap.delete(this._modelsCacheMap.keys().next().value);
+      }
+      const cacheEntry = { key: cacheKey, expiresAt: Date.now() + this.modelsCacheTtlMs, models: structuredClone(list) };
+      this._modelsCacheMap.set(cacheKey, cacheEntry);
+      this._modelsCache = cacheEntry;
     }
-    this._modelsCache = { key: cacheKey, expiresAt: Date.now() + this.modelsCacheTtlMs, models: structuredClone(list) };
     return list;
   }
 
@@ -633,17 +642,37 @@ export class DshAdapter {
     }
     if (this.mockRunner) {
       await beforeExecute();
+      if (this.closed) {
+        throw Object.assign(new Error('DshAdapter is closed'), { executionNotStarted: true });
+      }
       const threadId = `dsh-mock-${randomUUID()}`;
       const turnId = `turn-${randomUUID()}`;
       this.ownedThreads.add(threadId);
-      await onIdentity({ threadId, turnId });
-      onEvent({ method: 'turn/started', params: { threadId, turnId } });
+      try {
+        await onIdentity({ threadId, turnId });
+      } catch (err) {
+        this.ownedThreads.delete(threadId);
+        throw Object.assign(err, { executionNotStarted: true });
+      }
+      if (this.closed) {
+        this.ownedThreads.delete(threadId);
+        throw Object.assign(new Error('DshAdapter is closed'), { executionNotStarted: true });
+      }
+      try { onEvent({ method: 'turn/started', params: { threadId, turnId } }); } catch {}
       let interrupted = false;
       const ac = new AbortController();
+      const entry = {
+        threadId,
+        turnId,
+        interrupt: async () => {
+          interrupted = true;
+          ac.abort();
+        },
+      };
       const completion = Promise.resolve()
         .then(() => this.mockRunner(task, { signal: ac.signal, onEvent, threadId, turnId }))
         .then(res => {
-          onEvent({ method: 'turn/completed', params: { turn: { id: turnId, status: res?.status ?? 'completed' } } });
+          try { onEvent({ method: 'turn/completed', params: { turn: { id: turnId, status: res?.status ?? 'completed' } } }); } catch {}
           return {
             status: interrupted ? 'interrupted' : (res?.status ?? 'completed'),
             text: res?.text ?? '',
@@ -658,16 +687,8 @@ export class DshAdapter {
           error: err.message,
         }))
         .finally(() => {
-          this.tasks.delete(task.id);
+          if (this.tasks.get(task.id) === entry) this.tasks.delete(task.id);
         });
-      const entry = {
-        threadId,
-        turnId,
-        interrupt: async () => {
-          interrupted = true;
-          ac.abort();
-        },
-      };
       this.tasks.set(task.id, entry);
       return { threadId, turnId, completion, interrupt: entry.interrupt };
     }
@@ -689,7 +710,9 @@ export class DshAdapter {
     let agentOptions;
     try {
       agentOptions = await this._buildChildAgentOptions(root, task, startupAbort.signal);
+      if (this.closed) throw new Error('DshAdapter is closed');
       await beforeExecute();
+      if (this.closed) throw new Error('DshAdapter is closed');
       const liveRoot = this.resolveRootAgent(req ?? preflight.rootId);
       if (!liveRoot || liveRoot.id !== root.id) {
         throw this._makeSessionUnavailableError(
@@ -739,13 +762,28 @@ export class DshAdapter {
       throw error;
     }
 
+    const rawReceiptResult = Promise.resolve(receipt.result);
+    rawReceiptResult.catch(() => {});
+
+    if (this.closed) {
+      try { subagents.interrupt?.(receipt.childId, { kind: 'user' }); } catch {}
+      try { await receipt.dispose?.(); } catch {}
+      throw new Error('DshAdapter closed after child activation');
+    }
+
     this.lastError = null;
     const threadId = String(receipt.childId);
     const turnId = String(receipt.messageId ?? receipt.childId);
     this.ownedThreads.add(threadId);
     this.turnCorrelation.set(threadId, { turnId, attemptId: task.attemptId ?? null });
-    await onIdentity({ threadId, turnId });
-    onEvent({ method: 'turn/started', params: { threadId, turnId, subagentName: receipt.name } });
+    try {
+      await onIdentity({ threadId, turnId });
+      onEvent({ method: 'turn/started', params: { threadId, turnId, subagentName: receipt.name } });
+    } catch (err) {
+      try { subagents.interrupt?.(receipt.childId, { kind: 'user' }); } catch {}
+      try { await receipt.dispose?.(); } catch {}
+      throw err;
+    }
 
     let seenEventCount = 0;
     const pollEvents = () => {
@@ -773,7 +811,8 @@ export class DshAdapter {
       try { await receipt.dispose?.(); } catch { /* ignore */ }
     };
 
-    const completion = Promise.resolve(receipt.result)
+    const entry = { threadId, turnId, interrupt };
+    const completion = rawReceiptResult
       .then(async settled => {
         clearInterval(observerTimer);
         pollEvents();
@@ -795,13 +834,13 @@ export class DshAdapter {
         const directText = extractTextBlocks(settled?.output);
         const text = directText || lastAssistantText || '';
         const stopReason = settled?.stopReason ?? 'error';
-        onEvent({ method: 'turn/completed', params: { turn: { id: turnId, status: stopReason } } });
+        try { onEvent({ method: 'turn/completed', params: { turn: { id: turnId, status: stopReason } } }); } catch {}
 
-        if (stopReason === 'completed') {
+        if (stopReason === 'completed' && !interruptedByCaller) {
           return { status: 'completed', text, usage, error: null };
         }
-        if (stopReason === 'aborted' && interruptedByCaller) {
-          return { status: 'interrupted', text, usage, error: 'Subagent interrupted by caller' };
+        if (stopReason === 'aborted' || stopReason === 'interrupted' || interruptedByCaller) {
+          return { status: 'interrupted', text, usage, error: 'Subagent interrupted' };
         }
         return {
           status: 'failed',
@@ -821,11 +860,11 @@ export class DshAdapter {
       })
       .finally(async () => {
         clearInterval(observerTimer);
-        this.tasks.delete(task.id);
+        if (this.tasks.get(task.id) === entry) this.tasks.delete(task.id);
         try { await receipt.dispose?.(); } catch { /* ignore */ }
       });
 
-    this.tasks.set(task.id, { threadId, turnId, interrupt });
+    this.tasks.set(task.id, entry);
     return { threadId, turnId, completion, interrupt };
   }
 

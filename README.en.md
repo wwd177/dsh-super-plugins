@@ -12,8 +12,8 @@ Runs directly inside the DeepSeek Harness Cordis host process — **zero externa
 
 | Component | Package & Version | Role |
 | --- | --- | --- |
-| **SuperAgent Workflow & Protocol** | `@local/dsh-superagent-menu` (`1.25.2-dsh.1`) | Unified **SuperAgent** execution protocol: goal criteria freezing (R2), evidence-based routing, polyglot verification gates, and Git worktree delivery methodology; includes 3 skills plus `+` menu actions |
-| **Super Teams Review Workbench & Shared Core** | `@local/dsh-super-teams` (`0.17.2-dsh.1`) | Powered by SHA-256 locked shared `engine-core 0.19.1` (`Engine 0.20.2-dsh.1`): fixes Cordis strict-proxy startup ordering race and Electron ZIP export header compatibility, plus fail-closed multi-wave completeness gates (`INCOMPLETE_TEAM_DELIVERY` / `TEAM_EXECUTION_IN_FLIGHT`), isolated test environments with Windows long-path safety, exact active-subgraph critical-path scheduling, bounded auto-recovery, and strict multi-chat session affinity |
+| **SuperAgent Workflow & Protocol** | `@local/dsh-superagent-menu` (`1.25.3-dsh.1`) | Unified **SuperAgent** execution protocol: goal criteria freezing (R2), evidence-based routing, polyglot verification gates, and Git worktree delivery methodology; includes 3 skills plus `+` menu actions |
+| **Super Teams Review Workbench & Shared Core** | `@local/dsh-super-teams` (`0.17.3-dsh.1`) | Powered by SHA-256 locked shared `engine-core 0.19.2` (`Engine 0.20.3-dsh.1`): hardened watchdogs/remote push & reconcile/Cordis strict-proxy ordering/Electron export compatibility, plus fail-closed multi-wave completeness gates (`INCOMPLETE_TEAM_DELIVERY` / `TEAM_EXECUTION_IN_FLIGHT`), isolated test environments with Windows long-path safety, exact active-subgraph critical-path scheduling, bounded auto-recovery, and strict multi-chat session affinity |
 | **AI Agent Installer Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.4.0`) | Dedicated skill for any AI coding agent to safely install, verify, or multi-profile-safely uninstall via SQLite lock guard and profile-only purge protection |
 
 ---

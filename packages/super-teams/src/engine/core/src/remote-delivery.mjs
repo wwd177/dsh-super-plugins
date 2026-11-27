@@ -1,12 +1,58 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { ZERO_OID, runGit, sanitizeSuperagentBranch } from './git-worktree.mjs';
 import { assertApprovalValid } from './delivery-candidate.mjs';
-import { reconcileGitHubPrReadOnly, createGhReadOnlyTransport } from './github-readonly.mjs';
+import { reconcileGitHubPrReadOnly, createGhReadOnlyTransport, validateRepoSlug } from './github-readonly.mjs';
 
 const now = () => new Date().toISOString();
 const INTENT_TAG_PREFIX = 'superagent-intent';
+const OID_RE = /^[a-f0-9]{40,64}$/;
+const UNRESOLVED_PR_STATUSES = new Set(['pending_create', 'receipt_unknown', 'unknown']);
+const CONFIRMED_PR_STATUSES = new Set(['confirmed', 'confirmed_recovered', 'manually_bound']);
 
 const hashKey = text => createHash('sha256').update(String(text)).digest('hex');
+
+function validateRemoteUrl(remoteUrl) {
+  if (typeof remoteUrl !== 'string') {
+    throw Object.assign(new Error('remoteUrl is required for remote push'), { code: 'INVALID_REMOTE_URL' });
+  }
+  const trimmed = remoteUrl.trim();
+  if (!trimmed || trimmed.startsWith('-') || /[\x00-\x1f\x7f]/.test(trimmed)) {
+    throw Object.assign(new Error('remoteUrl is invalid or begins with "-"'), { code: 'INVALID_REMOTE_URL' });
+  }
+  return trimmed;
+}
+
+function resolveRemoteTargetRef(stableBranch, fallbackId, teamId) {
+  if (stableBranch !== undefined && stableBranch !== null && String(stableBranch).trim() !== '') {
+    const raw = String(stableBranch).trim();
+    if (raw.startsWith('refs/')) {
+      if (!raw.startsWith('refs/heads/superagent/')) {
+        throw Object.assign(
+          new Error(`Remote targetRef must stay under refs/heads/superagent/* (got "${raw}")`),
+          { code: 'REMOTE_TARGET_REF_FORBIDDEN' },
+        );
+      }
+    } else if (raw.includes('/') && !raw.startsWith('superagent/')) {
+      throw Object.assign(
+        new Error(`Remote target branch must stay under superagent/* (got "${raw}")`),
+        { code: 'REMOTE_TARGET_REF_FORBIDDEN' },
+      );
+    }
+    return sanitizeSuperagentBranch(raw, teamId);
+  }
+  return sanitizeSuperagentBranch(fallbackId, teamId);
+}
+
+function parseExpectedOldOid(expectedOldOid) {
+  if (expectedOldOid === undefined || expectedOldOid === null || String(expectedOldOid).trim() === '') {
+    return ZERO_OID;
+  }
+  const cleaned = String(expectedOldOid).trim();
+  if (!OID_RE.test(cleaned)) {
+    throw Object.assign(new Error(`Invalid expectedOldOid: "${cleaned}"`), { code: 'INVALID_EXPECTED_OLD_OID' });
+  }
+  return cleaned;
+}
 
 function buildIsolatedPublisherEnv(publisherEnv = {}) {
   const env = {
@@ -20,7 +66,8 @@ function buildIsolatedPublisherEnv(publisherEnv = {}) {
 }
 
 async function lsRemoteBranchOid({ remoteUrl, ref, repoPath, publisherEnv }) {
-  const res = await runGit(['ls-remote', '--heads', remoteUrl, ref], {
+  const safeUrl = validateRemoteUrl(remoteUrl);
+  const res = await runGit(['ls-remote', '--heads', '--', safeUrl, ref], {
     cwd: repoPath,
     env: buildIsolatedPublisherEnv(publisherEnv),
     timeoutMs: 20000,
@@ -31,7 +78,7 @@ async function lsRemoteBranchOid({ remoteUrl, ref, repoPath, publisherEnv }) {
   const line = res.stdout.toString('utf8').split(/\r?\n/).find(l => l.trim().endsWith(ref) || l.trim().endsWith(`refs/heads/${ref.replace(/^refs\/heads\//, '')}`));
   if (!line) return ZERO_OID;
   const oid = line.trim().split(/\s+/)[0];
-  return /^[a-f0-9]{40,64}$/.test(oid) ? oid : ZERO_OID;
+  return OID_RE.test(oid) ? oid : ZERO_OID;
 }
 
 /**
@@ -56,19 +103,17 @@ export class RemoteDeliveryService {
   }
 
   _assertRepoAllowed(team, repo) {
-    if (!repo || typeof repo !== 'string' || !repo.includes('/')) {
-      throw Object.assign(new Error('repo must be in "owner/name" format'), { code: 'INVALID_REPO' });
-    }
-    const norm = repo.trim().toLowerCase();
+    const safeRepo = validateRepoSlug(repo);
+    const norm = safeRepo.toLowerCase();
     const teamAllowed = Array.isArray(team.allowedRemoteRepos) ? team.allowedRemoteRepos.map(r => String(r).toLowerCase()) : null;
     const allowList = teamAllowed ?? this.defaultAllowedRepos;
     if (!allowList || !allowList.length || !allowList.includes(norm)) {
       throw Object.assign(
-        new Error(`Remote repository "${repo}" is not in the authorized write allowlist`),
+        new Error(`Remote repository "${safeRepo}" is not in the authorized write allowlist`),
         { code: 'REMOTE_REPO_NOT_ALLOWED' },
       );
     }
-    return repo.trim();
+    return safeRepo;
   }
 
   _getOrCreateStream(teamId, deliveryStreamId, defaults = {}) {
@@ -104,18 +149,16 @@ export class RemoteDeliveryService {
     remoteUrl,
     stableBranch,
     expectedOldOid = ZERO_OID,
-    purpose = 'draft_pr',
+    purpose = 'remote_push',
     publisherEnv = {},
   } = {}) {
     const team = this.engine._team(teamId);
     const allowedRepo = this._assertRepoAllowed(team, repo);
-    if (!remoteUrl || typeof remoteUrl !== 'string') {
-      throw new Error('remoteUrl is required for remote push');
-    }
-    const sanitized = sanitizeSuperagentBranch(stableBranch || candidateId, team.id);
-    const targetBranch = stableBranch ? String(stableBranch).replace(/^refs\/heads\//, '').trim() : sanitized.branch;
-    const targetRef = `refs/heads/${targetBranch}`;
-    const expectedOld = expectedOldOid || ZERO_OID;
+    const safeRemoteUrl = validateRemoteUrl(remoteUrl);
+    const sanitized = resolveRemoteTargetRef(stableBranch, candidateId, team.id);
+    const targetBranch = sanitized.branch;
+    const targetRef = sanitized.ref;
+    const expectedOld = parseExpectedOldOid(expectedOldOid);
     const streamId = deliveryStreamId || `stream-${team.id}-${targetBranch}`;
 
     const prepared = this.store.transaction(() => {
@@ -124,10 +167,24 @@ export class RemoteDeliveryService {
         throw new Error(`Candidate not found in team: ${candidateId}`);
       }
       const stream = this._getOrCreateStream(team.id, streamId, { repo: allowedRepo, stableBranch: targetBranch });
+      if (stream.repo && stream.repo.toLowerCase() !== allowedRepo.toLowerCase()) {
+        throw Object.assign(
+          new Error(`Delivery stream ${stream.id} is bound to repo "${stream.repo}", cannot write "${allowedRepo}"`),
+          { code: 'STREAM_REPO_MISMATCH' },
+        );
+      }
       if (stream.state === 'frozen_external_drift') {
         throw Object.assign(
           new Error(`Delivery stream ${stream.id} is frozen due to external drift (observed head ${stream.actualRemoteHead}); resolve drift before writing`),
           { code: 'STREAM_FROZEN_EXTERNAL_DRIFT', stream },
+        );
+      }
+      const pendingPush = (this.store.teamRemotePushIntents?.(team.id) ?? [])
+        .find(i => i.deliveryStreamId === stream.id && i.status === 'pending_remote');
+      if (pendingPush) {
+        throw Object.assign(
+          new Error(`Delivery stream ${stream.id} already has an unresolved remote push intent (${pendingPush.id}); run reconcileRemoteIntents first`),
+          { code: 'REMOTE_PUSH_IN_FLIGHT', intentId: pendingPush.id },
         );
       }
       const approval = this.store.candidateApproval(approvalId);
@@ -136,7 +193,7 @@ export class RemoteDeliveryService {
         approval,
         candidate,
         purpose,
-        targetRef: approval?.targetRef ?? targetRef,
+        targetRef,
         currentCriteriaRevision: frozenCriteria?.revision ?? null,
         currentGateHash: frozenCriteria?.gateHash ?? null,
       });
@@ -148,7 +205,7 @@ export class RemoteDeliveryService {
         candidateId: candidate.id,
         approvalId: approval.id,
         repo: allowedRepo,
-        remoteUrl,
+        remoteUrl: safeRemoteUrl,
         stableBranch: targetBranch,
         targetRef,
         expectedOldOid: expectedOld,
@@ -170,7 +227,7 @@ export class RemoteDeliveryService {
       : `--force-with-lease=${targetRef}:${expectedOld}`;
 
     const pushRes = await runGit(
-      ['push', leaseSpec, remoteUrl, `${prepared.candidate.commitOid}:${targetRef}`],
+      ['push', leaseSpec, '--', safeRemoteUrl, `${prepared.candidate.commitOid}:${targetRef}`],
       {
         cwd: prepared.candidate.repoPath,
         env: buildIsolatedPublisherEnv(publisherEnv),
@@ -180,7 +237,7 @@ export class RemoteDeliveryService {
 
     if (pushRes.code !== 0) {
       const actualRemoteHead = await lsRemoteBranchOid({
-        remoteUrl,
+        remoteUrl: safeRemoteUrl,
         ref: targetRef,
         repoPath: prepared.candidate.repoPath,
         publisherEnv,
@@ -239,6 +296,13 @@ export class RemoteDeliveryService {
     if (!['adopt_as_candidate', 'redirect_new_branch'].includes(action)) {
       throw new Error('action must be "adopt_as_candidate" or "redirect_new_branch"');
     }
+    let resolvedNewBranch = null;
+    if (action === 'redirect_new_branch') {
+      if (!newBranch || typeof newBranch !== 'string' || !newBranch.trim()) {
+        throw new Error('newBranch is required for redirect_new_branch');
+      }
+      resolvedNewBranch = resolveRemoteTargetRef(newBranch, team.id, team.id).branch;
+    }
     return this.store.transaction(() => {
       const stream = this.store.deliveryStream(deliveryStreamId);
       if (!stream || stream.teamId !== team.id) throw new Error(`Delivery stream not found: ${deliveryStreamId}`);
@@ -247,12 +311,12 @@ export class RemoteDeliveryService {
       stream.lastDriftResolution = {
         action,
         previousHead: stream.actualRemoteHead,
-        ...(newBranch ? { newBranch } : {}),
+        ...(resolvedNewBranch ? { newBranch: resolvedNewBranch } : {}),
         actor,
         at: now(),
       };
-      if (action === 'redirect_new_branch' && newBranch) {
-        stream.stableBranch = String(newBranch).replace(/^refs\/heads\//, '').trim();
+      if (action === 'redirect_new_branch' && resolvedNewBranch) {
+        stream.stableBranch = resolvedNewBranch;
         stream.boundPrNumber = null;
       }
       stream.updatedAt = now();
@@ -262,7 +326,7 @@ export class RemoteDeliveryService {
   }
 
   /**
-   * 幂等建 PR（独立意图；若回执丢失绝不盲目二次创建）。
+   * 幂等建 PR（独立意图；若回执丢失绝不盲目二次创建；支持显式 intentId 幂等重放）。
    */
   async createPullRequestIdempotent(teamId, {
     deliveryStreamId,
@@ -274,6 +338,7 @@ export class RemoteDeliveryService {
     title,
     body = '',
     draft = true,
+    intentId: explicitIntentId = null,
     transport,
   } = {}) {
     const team = this.engine._team(teamId);
@@ -281,15 +346,59 @@ export class RemoteDeliveryService {
     if (!transport || typeof transport.createPullRequest !== 'function') {
       throw new Error('Authorized write transport.createPullRequest is required');
     }
+    const cleanHeadBranch = String(headBranch ?? '').replace(/^refs\/heads\//, '').trim();
+    const cleanBaseBranch = String(baseBranch ?? '').replace(/^refs\/heads\//, '').trim();
+    if (!cleanHeadBranch || !cleanBaseBranch) {
+      throw new Error('headBranch and baseBranch are required');
+    }
 
-    const intentId = `printent-${randomUUID().slice(0, 12)}`;
+    const intentId = typeof explicitIntentId === 'string' && explicitIntentId.trim()
+      ? explicitIntentId.trim()
+      : `printent-${randomUUID().slice(0, 12)}`;
     const markerComment = `<!-- ${INTENT_TAG_PREFIX}:${intentId} -->`;
     const bodyWithMarker = `${String(body || '').trim()}\n\n${markerComment}`.trim();
 
     const prepared = this.store.transaction(() => {
+      const stream = this._getOrCreateStream(team.id, deliveryStreamId, { repo: allowedRepo, stableBranch: cleanHeadBranch });
+      if (stream.repo && stream.repo.toLowerCase() !== allowedRepo.toLowerCase()) {
+        throw Object.assign(
+          new Error(`Delivery stream ${stream.id} is bound to repo "${stream.repo}", cannot create PR on "${allowedRepo}"`),
+          { code: 'STREAM_REPO_MISMATCH' },
+        );
+      }
+
+      if (typeof explicitIntentId === 'string' && explicitIntentId.trim()) {
+        const priorIntent = this.store.prCreateIntent?.(intentId);
+        if (priorIntent) {
+          if (priorIntent.teamId !== team.id || priorIntent.deliveryStreamId !== stream.id || priorIntent.candidateId !== candidateId) {
+            throw Object.assign(
+              new Error(`PR intentId ${intentId} already used with different team/stream/candidate parameters`),
+              { code: 'PR_INTENT_ID_CONFLICT' },
+            );
+          }
+          if (CONFIRMED_PR_STATUSES.has(priorIntent.status)) {
+            return { replayResult: { ok: true, idempotentReplay: true, status: priorIntent.status, intent: priorIntent, stream } };
+          }
+          if (UNRESOLVED_PR_STATUSES.has(priorIntent.status)) {
+            throw Object.assign(
+              new Error(`PR create intent ${priorIntent.id} is still unresolved (${priorIntent.status}); reconcile before retrying`),
+              { code: 'PR_CREATE_INTENT_UNRESOLVED', intent: priorIntent },
+            );
+          }
+        }
+      }
+
+      const unresolvedPr = (this.store.teamPrCreateIntents?.(team.id) ?? [])
+        .find(i => i.deliveryStreamId === stream.id && UNRESOLVED_PR_STATUSES.has(i.status));
+      if (unresolvedPr) {
+        throw Object.assign(
+          new Error(`Delivery stream ${stream.id} already has an unresolved PR creation intent (${unresolvedPr.id}, status=${unresolvedPr.status}); reconcile first`),
+          { code: 'PR_CREATE_INTENT_UNRESOLVED', intent: unresolvedPr },
+        );
+      }
+
       const candidate = this.store.candidate(candidateId);
       if (!candidate || candidate.teamId !== team.id) throw new Error(`Candidate not found: ${candidateId}`);
-      const stream = this._getOrCreateStream(team.id, deliveryStreamId, { repo: allowedRepo, stableBranch: headBranch });
       if (stream.state === 'frozen_external_drift') {
         throw Object.assign(new Error(`Delivery stream ${stream.id} is frozen due to external drift`), { code: 'STREAM_FROZEN_EXTERNAL_DRIFT' });
       }
@@ -299,7 +408,7 @@ export class RemoteDeliveryService {
         approval,
         candidate,
         purpose: draft ? 'draft_pr' : 'request_merge',
-        targetRef: approval?.targetRef ?? `refs/heads/${headBranch}`,
+        targetRef: `refs/heads/${cleanHeadBranch}`,
         currentCriteriaRevision: frozenCriteria?.revision ?? null,
         currentGateHash: frozenCriteria?.gateHash ?? null,
       });
@@ -311,8 +420,8 @@ export class RemoteDeliveryService {
         candidateId: candidate.id,
         approvalId: approval.id,
         repo: allowedRepo,
-        headBranch,
-        baseBranch,
+        headBranch: cleanHeadBranch,
+        baseBranch: cleanBaseBranch,
         draft: Boolean(draft),
         expectedOid: candidate.commitOid,
         status: 'pending_create',
@@ -325,11 +434,15 @@ export class RemoteDeliveryService {
       return { intent, candidate, stream };
     });
 
+    if (prepared.replayResult) {
+      return prepared.replayResult;
+    }
+
     try {
       const created = await transport.createPullRequest({
         repo: allowedRepo,
-        head: headBranch,
-        base: baseBranch,
+        head: cleanHeadBranch,
+        base: cleanBaseBranch,
         title,
         body: bodyWithMarker,
         draft: Boolean(draft),
@@ -369,16 +482,79 @@ export class RemoteDeliveryService {
   }
 
   /**
-   * 断线重启后只读查证丢失回执的建 PR 意图（零写请求）。
+   * 断线重启后只读查证丢失回执的建 PR 与推送意图（零写请求）。
    */
-  async reconcileRemoteIntents(teamId, { deliveryStreamId = null, repo = null, transport = null } = {}) {
+  async reconcileRemoteIntents(teamId, { deliveryStreamId = null, repo = null, transport = null, publisherEnv = {} } = {}) {
     const team = this.engine._team(teamId);
-    const roTransport = transport ?? createGhReadOnlyTransport();
-    const intents = this.store.teamPrCreateIntents(team.id)
-      .filter(i => i.status === 'receipt_unknown' && (!deliveryStreamId || i.deliveryStreamId === deliveryStreamId));
+    const prIntents = this.store.teamPrCreateIntents(team.id)
+      .filter(i => (i.status === 'receipt_unknown' || i.status === 'pending_create') && (!deliveryStreamId || i.deliveryStreamId === deliveryStreamId));
+    const pushIntents = (this.store.teamRemotePushIntents?.(team.id) ?? [])
+      .filter(i => i.status === 'pending_remote' && (!deliveryStreamId || i.deliveryStreamId === deliveryStreamId));
+    const roTransport = prIntents.length > 0 ? (transport ?? createGhReadOnlyTransport()) : null;
     const results = [];
+    const pushResults = [];
 
-    for (const intent of intents) {
+    for (const pushIntent of pushIntents) {
+      const candidate = this.store.candidate(pushIntent.candidateId);
+      const repoPath = candidate?.repoPath ?? team.repoPath;
+      let observedOid = null;
+      let probeErr = null;
+      try {
+        observedOid = await lsRemoteBranchOid({
+          remoteUrl: pushIntent.remoteUrl,
+          ref: pushIntent.targetRef,
+          repoPath,
+          publisherEnv,
+        });
+      } catch (err) {
+        probeErr = err.message;
+      }
+      this.store.transaction(() => {
+        const stream = this.store.deliveryStream(pushIntent.deliveryStreamId);
+        if (probeErr !== null) {
+          pushIntent.status = 'unknown';
+          pushIntent.error = probeErr;
+          pushIntent.updatedAt = now();
+          this.store.saveRemotePushIntent(pushIntent);
+          pushResults.push({ intentId: pushIntent.id, outcome: 'unknown', error: probeErr, writeRequestsMade: 0 });
+          return;
+        }
+        if (observedOid === pushIntent.targetOid) {
+          pushIntent.status = 'pushed_recovered';
+          pushIntent.actualRemoteHead = observedOid;
+          pushIntent.updatedAt = now();
+          this.store.saveRemotePushIntent(pushIntent);
+          if (stream) {
+            stream.lastConfirmedPushOid = observedOid;
+            stream.actualRemoteHead = observedOid;
+            stream.updatedAt = now();
+            this.store.saveDeliveryStream(stream);
+          }
+          pushResults.push({ intentId: pushIntent.id, outcome: 'confirmed_recovered', actualRemoteHead: observedOid, writeRequestsMade: 0 });
+        } else if (observedOid === (pushIntent.expectedOldOid || ZERO_OID)) {
+          pushIntent.status = 'aborted_before_remote';
+          pushIntent.actualRemoteHead = observedOid;
+          pushIntent.updatedAt = now();
+          this.store.saveRemotePushIntent(pushIntent);
+          pushResults.push({ intentId: pushIntent.id, outcome: 'not_applied', actualRemoteHead: observedOid, writeRequestsMade: 0 });
+        } else {
+          pushIntent.status = 'rejected_external_drift';
+          pushIntent.actualRemoteHead = observedOid;
+          pushIntent.updatedAt = now();
+          this.store.saveRemotePushIntent(pushIntent);
+          if (stream) {
+            stream.state = 'frozen_external_drift';
+            stream.frozenReason = `Expected old OID ${pushIntent.expectedOldOid}, but remote had ${observedOid}`;
+            stream.actualRemoteHead = observedOid;
+            stream.updatedAt = now();
+            this.store.saveDeliveryStream(stream);
+          }
+          pushResults.push({ intentId: pushIntent.id, outcome: 'external_drift', actualRemoteHead: observedOid, writeRequestsMade: 0 });
+        }
+      });
+    }
+
+    for (const intent of prIntents) {
       const candidate = this.store.candidate(intent.candidateId);
       const stream = this.store.deliveryStream(intent.deliveryStreamId);
       const obs = await reconcileGitHubPrReadOnly({
@@ -416,7 +592,14 @@ export class RemoteDeliveryService {
       });
     }
 
-    return { teamId: team.id, reconciledCount: results.length, writeRequestsMade: 0, results };
+    return {
+      teamId: team.id,
+      reconciledCount: results.length,
+      pushReconciledCount: pushResults.length,
+      writeRequestsMade: 0,
+      results,
+      pushResults,
+    };
   }
 
   resolveUnknownPrIntent(teamId, { intentId, action, prNumber = null, actor = 'maintainer', note = null } = {}) {
@@ -516,8 +699,17 @@ export class RemoteDeliveryService {
       } else {
         const targetMember = memberId || team.members[0]?.id;
         if (!targetMember) throw new Error('Team has no members to assign remote revision task');
+        const baseReqId = `remote-rev-${deliveryStreamId}-${candidateId}`;
+        let revRequestId = baseReqId;
+        if (this.store.request?.(revRequestId)) {
+          let round = 2;
+          while (this.store.request?.(`${baseReqId}-r${round}`)) {
+            round += 1;
+          }
+          revRequestId = `${baseReqId}-r${round}`;
+        }
         const created = this.engine.submit({
-          requestId: `remote-rev-${deliveryStreamId}-${candidateId}`,
+          requestId: revRequestId,
           teamId: team.id,
           memberId: targetMember,
           title: `集成修订：修复远端检查 (${candidateId})`,

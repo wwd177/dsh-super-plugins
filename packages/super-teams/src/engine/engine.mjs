@@ -387,7 +387,11 @@ export class Engine extends EventEmitter {
       ...(workspaceMode === 'git-worktree' ? { workspaceMode, repoPath: gitRepo.repoPath } : {}),
     };
     const plan = tasks === undefined ? undefined : teamPlan(tasks, input.members, this.contextStore);
-    const fingerprint = hash(JSON.stringify(canonical(plan === undefined ? input : { ...input, tasks: plan })));
+    const fingerprint = hash(JSON.stringify(canonical({
+      ...(plan === undefined ? input : { ...input, tasks: plan }),
+      ...(normalizedBudget ? { budget: normalizedBudget } : {}),
+      ...(cleanAllowedRepos ? { allowedRemoteRepos: cleanAllowedRepos } : {}),
+    })));
     const prior = this.store.teamRequest(requestId);
     if (prior) {
       if (prior.fingerprint !== fingerprint) throw new Error('Team requestId already used with different parameters');
@@ -451,6 +455,7 @@ export class Engine extends EventEmitter {
     try {
       changes = this.store.transaction(() => {
         this.store.saveTeam(team);
+        if (normalizedBudget) this.budgetGuard.configureTeamBudget(team.id, normalizedBudget);
         this.store.addTeamRequest(requestId, fingerprint, team.id);
         return planned.map(task => this._writeChange(task, 'submitted-to-queue'));
       });
@@ -467,7 +472,6 @@ export class Engine extends EventEmitter {
     }
     this.emit('change', { teamId: team.id, revision: team.revision, type: 'team-created', control: team.control });
     for (const change of changes) this.emit('change', change);
-    if (normalizedBudget) this.budgetGuard.configureTeamBudget(team.id, normalizedBudget);
     return this.getTeam(team.id);
   }
   getTeam(id) {
@@ -798,6 +802,20 @@ export class Engine extends EventEmitter {
       }
       const selection = this._chooseModel(models, task.difficulty);
       if (!selection) { if (task.error !== 'No usable model and reasoning effort returned by adapter.models' || task.blockReason !== 'preflight') { task.state = 'blocked'; task.blockReason = 'preflight'; task.error = 'No usable model and reasoning effort returned by adapter.models'; this._save(task, 'model-blocked'); } continue; }
+      const reserveBlock = task.teamId && this.budgetGuard ? this.budgetGuard.peekReserveBlock(task.teamId) : null;
+      if (reserveBlock?.blocked) {
+        if (reserveBlock.code === 'BUDGET_EXCEEDED_CONCURRENCY') continue;
+        try {
+          this.budgetGuard.reserveAttempt(task.teamId, randomUUID());
+        } catch (error) {
+          const cur = this.store.get(task.id);
+          if (cur && (cur.state !== 'blocked' || cur.error !== error.message || cur.blockReason !== 'budget')) {
+            cur.state = 'blocked'; cur.blockReason = 'budget'; cur.error = error.message;
+            this._save(cur, 'budget-blocked');
+          }
+          continue;
+        }
+      }
       const preparationRevision = task.revision;
       let preparedWorkspace = null, preserveWorkspace = false;
       try {
@@ -983,7 +1001,7 @@ export class Engine extends EventEmitter {
     const effort = preferences.find(value => efforts.includes(value)) ?? efforts[0];
     return effort ? { model: model.model, effort, modelReason: model === light && ['low', 'easy'].includes(difficulty) ? 'Low difficulty: lightweight model explicitly present in host model list; supported effort selected' : 'Host default/first usable model; difficulty selects a supported reasoning effort' } : null;
   }
-  _topoSortTasks(tasks) {
+  _topoSortTasks(tasks, { includeRevisionEdges = false } = {}) {
     const byId = new Map(tasks.map(t => [t.id, t]));
     const depthMemo = new Map();
     const depthOf = (id, stack = new Set()) => {
@@ -993,7 +1011,14 @@ export class Engine extends EventEmitter {
       if (!item) return 0;
       stack.add(id);
       let d = 0;
-      for (const dep of item.dependsOn ?? []) {
+      const deps = new Set(item.dependsOn ?? []);
+      if (includeRevisionEdges && item.revisionOfCandidateId) {
+        const parentCand = this.store.candidate(item.revisionOfCandidateId);
+        for (const cid of parentCand?.taskIds ?? []) deps.add(cid);
+        for (const aid of item.affectedTaskIds ?? []) deps.add(aid);
+        deps.delete(id);
+      }
+      for (const dep of deps) {
         if (byId.has(dep)) d = Math.max(d, depthOf(dep, stack) + 1);
       }
       stack.delete(id);
@@ -1003,6 +1028,8 @@ export class Engine extends EventEmitter {
     return [...tasks].sort((a, b) => {
       const da = depthOf(a.id), db = depthOf(b.id);
       if (da !== db) return da - db;
+      const ra = a.revisionOfCandidateId ? 1 : 0, rb = b.revisionOfCandidateId ? 1 : 0;
+      if (ra !== rb) return ra - rb;
       const ca = String(a.createdAt ?? ''), cb = String(b.createdAt ?? '');
       if (ca !== cb) return ca.localeCompare(cb);
       return String(a.id).localeCompare(String(b.id));
@@ -1149,7 +1176,7 @@ export class Engine extends EventEmitter {
         );
       }
     }
-    const accepted = this._topoSortTasks(completeness.acceptedTasks);
+    const accepted = this._topoSortTasks(completeness.acceptedTasks, { includeRevisionEdges: true });
     const unaccepted = completeness.unacceptedTasks;
     if (!accepted.length) throw new Error('No accepted git-worktree tasks are ready to merge');
     const evidenceDir = path.join(this.dataDir, 'merge-evidence', team.id);
@@ -1255,7 +1282,14 @@ export class Engine extends EventEmitter {
   recordRefusal(surface, action, reason, payload = {}) {
     if (!this.store || this.closed) return null;
     try {
-      const rec = { id: randomUUID(), surface: String(surface || 'unknown'), action: String(action || ''), reason: String(reason || ''), payload, at: now() };
+      let safePayload = payload;
+      try {
+        const json = JSON.stringify(payload ?? {});
+        if (json.length > 4096) safePayload = { truncated: true, bytes: json.length, preview: json.slice(0, 2048) };
+      } catch {
+        safePayload = { unserializable: true };
+      }
+      const rec = { id: randomUUID(), surface: String(surface || 'unknown').slice(0, 64), action: String(action || '').slice(0, 200), reason: String(reason || '').slice(0, 1000), payload: safePayload, at: now() };
       this.store.addRefusal(rec);
       return rec;
     } catch { return null; }
@@ -1342,6 +1376,7 @@ export class Engine extends EventEmitter {
   async _dispatch(task, prompt, budgetReservation = null) {
     const { id, attemptId } = task;
     let durationTimer = null;
+    let graceTimer = null;
     let durationTimedOut = false;
     try {
       const permission = this._current(id, attemptId);
@@ -1448,6 +1483,11 @@ export class Engine extends EventEmitter {
       this._save(current, 'host-started');
       if (current.control !== 'run' && current.state !== 'abandoned') this._interrupt(current);
       let result;
+      const isPidAlive = pid => {
+        try { process.kill(Number(pid), 0); return true; }
+        catch (err) { return err?.code === 'EPERM'; }
+      };
+      const trackedPids = Array.isArray(handle.pids) ? handle.pids.filter(Boolean) : (handle.pid ? [handle.pid] : []);
       const durationMsLimit = budgetReservation?.maxTaskDurationMs ?? null;
       if (durationMsLimit) {
         let resolveTimeout;
@@ -1460,13 +1500,30 @@ export class Engine extends EventEmitter {
           } else if (handle.pid) {
             killProcessTree(handle.pid);
           }
-          const grace = setTimeout(() => {
-            resolveTimeout({ status: 'failed', text: '', error: `budget_exceeded:duration (${durationMsLimit}ms)` });
+          graceTimer = setTimeout(() => {
+            const stopConfirmed = trackedPids.length > 0 && trackedPids.every(pid => !isPidAlive(pid));
+            resolveTimeout({
+              status: stopConfirmed ? 'failed' : 'unknown',
+              stopCertified: stopConfirmed,
+              durationTimedOut: true,
+              text: '',
+              error: `budget_exceeded:duration (${durationMsLimit}ms)`,
+            });
           }, 300);
-          grace.unref?.();
+          graceTimer.unref?.();
         }, durationMsLimit);
         durationTimer.unref?.();
         result = await Promise.race([handle.completion, timeoutPromise]);
+        if (durationTimedOut) {
+          const stopConfirmed = trackedPids.length > 0 && trackedPids.every(pid => !isPidAlive(pid));
+          result = {
+            ...(result && typeof result === 'object' ? result : {}),
+            durationTimedOut: true,
+            stopCertified: result?.stopCertified ?? stopConfirmed,
+            error: `budget_exceeded:duration (${durationMsLimit}ms)`,
+            status: stopConfirmed ? 'failed' : (result?.status === 'failed' ? 'failed' : 'unknown'),
+          };
+        }
       } else {
         result = await handle.completion;
       }
@@ -1512,10 +1569,11 @@ export class Engine extends EventEmitter {
       this._save(current, error.executionNotStarted ? (current.state === 'blocked' ? 'session-blocked' : 'execution-not-started') : 'execution-unknown');
     } finally {
       clearTimeout(durationTimer);
+      clearTimeout(graceTimer);
       if (this.handles.get(id)?.attemptId === attemptId) this.handles.delete(id);
       const afterTask = this.store ? this.store.get(id) : null;
       if (budgetReservation?.enforced && task.teamId && this.budgetGuard) {
-        if (!afterTask?.executionUnresolved || afterTask.state === 'failed' || durationTimedOut || afterTask?.attemptId !== attemptId) {
+        if (!afterTask?.executionUnresolved || afterTask.state === 'failed' || afterTask?.attemptId !== attemptId) {
           this.budgetGuard.releaseAttempt(task.teamId, attemptId);
         }
       }
@@ -1599,7 +1657,9 @@ export class Engine extends EventEmitter {
         this.budgetGuard.releaseAttempt(task.teamId, task.attemptId);
       }
     }
-    const willAutoRetry = !breakerTripped && !this.closed && !abandoned && result.status === 'failed' && !task.executionUnresolved && !task.verification && task.control === 'run' && task.state === 'failed' && (task.maxRetries ?? 0) > (task.retryCount ?? 0) && this._mayRun(task);
+    const isDurationTimedOut = Boolean(result.durationTimedOut || String(result.error || '').startsWith('budget_exceeded:duration'));
+    if (isDurationTimedOut) task.durationTimedOut = true;
+    const willAutoRetry = !isDurationTimedOut && !breakerTripped && !this.closed && !abandoned && result.status === 'failed' && !task.executionUnresolved && !task.verification && task.control === 'run' && task.state === 'failed' && (task.maxRetries ?? 0) > (task.retryCount ?? 0) && this._mayRun(task);
     this._save(task, breakerTripped ? 'same-error-breaker-tripped' : 'execution-result', { status: result.status, ...(willAutoRetry ? { autoRetryPending: true } : {}) });
     if (!this.closed && !abandoned && task.autoAccept === true && result.status === 'completed' && !task.executionUnresolved && this._mayRun(task) && task.state === 'checked' && task.checks.length > 0 && task.checks.some(check => check.type === 'node_test') && task.verification?.passed === true) {
       try {
@@ -1829,6 +1889,9 @@ export class Engine extends EventEmitter {
       priorTurnId: task.turnId ?? null,
     };
     task.executionUnresolved = false;
+    if (task.teamId && task.attemptId && this.budgetGuard) {
+      this.budgetGuard.releaseAttempt(task.teamId, task.attemptId);
+    }
     const value = this._save(task, 'unresolved-resolved', {
       executionUnresolved: false,
       stopCertified: false,
@@ -1928,7 +1991,7 @@ export class Engine extends EventEmitter {
     task.control = task.teamId && this._team(task.teamId).control === 'pause' ? 'pause' : 'run';
     task.state = task.control === 'pause' ? 'paused' : 'queued';
     if (task.control === 'pause' && task.teamId) task.teamPauseOrigin = { teamId: task.teamId, priorControl: 'run' };
-    task.error = null; task.runtimeError = null; task.verification = null; delete task.conflictDependencyVersions; delete task.autoAcceptBlockedReason;
+    task.error = null; task.runtimeError = null; task.verification = null; task.summary = null; task.resultFile = null; task.resultSha256 = null; task.completionStatus = null; task.usage = null; task.startedAt = null; task.finishedAt = null; task.durationMs = null; task.recovery = null; task.recoveryTerminal = null; task.durationTimedOut = false; delete task.artifacts; delete task.acceptance; delete task.conflictDependencyVersions; delete task.autoAcceptBlockedReason;
     this.liveActivity.delete(task.id);
     const saved = this._save(task, 'rework-requested', { reworkCount: task.reworkCount, actor });
     if (task.control === 'run') this.runDue().catch(() => {});

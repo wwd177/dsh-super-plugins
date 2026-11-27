@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { DshSuperTeamsRuntime, primaryToolSchemas, legacyToolSchemas, safeCordisWarn } from './src/runtime.mjs';
+import { DshSuperTeamsRuntime, primaryToolSchemas, legacyToolSchemas, safeCordisWarn, defaultDshEngineDataDir } from './src/runtime.mjs';
 
 export const name = 'super-teams';
 export const inject = ['tools'];
@@ -79,8 +79,8 @@ function createBundledSkillProvider() {
 const activeRuntimeOwners = new Map();
 
 function acquireRuntimeOwner({ ctx, dataDir }) {
-  const probe = new DshSuperTeamsRuntime({ ctx, ...(dataDir ? { dataDir } : {}) });
-  const key = process.platform === 'win32' ? probe.dataDir.toLowerCase() : probe.dataDir;
+  const resolvedDir = dataDir ? path.resolve(dataDir) : defaultDshEngineDataDir(ctx);
+  const key = process.platform === 'win32' ? resolvedDir.toLowerCase() : resolvedDir;
   const existing = activeRuntimeOwners.get(key);
   if (existing && !existing.runtime.closed) {
     existing.refCount++;
@@ -96,10 +96,11 @@ function acquireRuntimeOwner({ ctx, dataDir }) {
       },
     };
   }
-  const entry = { runtime: probe, refCount: 1 };
+  const runtime = new DshSuperTeamsRuntime({ ctx, ...(dataDir ? { dataDir } : {}) });
+  const entry = { runtime, refCount: 1 };
   activeRuntimeOwners.set(key, entry);
   return {
-    runtime: probe,
+    runtime,
     release() {
       entry.refCount--;
       if (entry.refCount <= 0) {

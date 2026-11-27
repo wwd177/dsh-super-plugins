@@ -196,7 +196,12 @@ export class Store {
   teamDeliveryStreams(teamId) { return this.db.prepare('SELECT body FROM delivery_streams WHERE team_id=? ORDER BY rowid').all(teamId).map(r => JSON.parse(r.body)); }
   saveBudgetLedger(record) { this.db.prepare('INSERT INTO budget_ledger(team_id,body) VALUES(?,?) ON CONFLICT(team_id) DO UPDATE SET body=excluded.body').run(record.teamId, JSON.stringify(record)); }
   budgetLedger(teamId) { const row = this.db.prepare('SELECT body FROM budget_ledger WHERE team_id=?').get(teamId); return row ? JSON.parse(row.body) : null; }
-  addRefusal(record) { this.db.prepare('INSERT INTO refusal_log(id,surface,body) VALUES(?,?,?)').run(record.id, record.surface, JSON.stringify(record)); }
+  addRefusal(record) {
+    this.transaction(() => {
+      this.db.prepare('INSERT INTO refusal_log(id,surface,body) VALUES(?,?,?)').run(record.id, record.surface, JSON.stringify(record));
+      this.db.prepare('DELETE FROM refusal_log WHERE id NOT IN (SELECT id FROM refusal_log ORDER BY rowid DESC LIMIT 500)').run();
+    });
+  }
   listRefusals(limit = 50) { return this.db.prepare('SELECT body FROM refusal_log ORDER BY rowid DESC LIMIT ?').all(limit).map(r => JSON.parse(r.body)); }
   saveEnvRecipe(record) { this.db.prepare('INSERT INTO env_recipes(id,team_id,body) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(record.id, record.teamId, JSON.stringify(record)); }
   teamEnvRecipes(teamId) { return this.db.prepare('SELECT body FROM env_recipes WHERE team_id=? ORDER BY rowid').all(teamId).map(r => JSON.parse(r.body)); }

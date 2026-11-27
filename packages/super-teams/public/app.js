@@ -94,9 +94,9 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
   let attentionPage = null, pendingApprovals = [], lastApprovals = '', auditMode = false;
   let refreshFlight = null, refreshAgain = false, refreshTimer = null, tokenFlight = null, reconnectAttempt = 0, connectionProblem = '';
   let streamAbort = null, streamConnected = false, streamRetryTimer = null, sseDebounce = null;
-  let changePollTimer = null, lastChangeSeq = 0;
+  let changePollTimer = null, lastChangeSeq = null, changePollFlight = false;
   const selectedCandidateByTeam = new Map(), selectedApprovalByTeam = new Map(), knownCandidateCountByTeam = new Map(), prReconcileByTeam = new Map(), v19Drafts = new Map(), repoProbeByTeam = new Map();
-  let lastSecurityPosture = null, lastRefusals = null, pendingCreateBudget = null;
+  let lastSecurityPosture = null, lastRefusals = null;
   const v19Draft = teamId => { if (!v19Drafts.has(teamId)) v19Drafts.set(teamId, {}); return v19Drafts.get(teamId); };
   const v19FmtErr = err => (err ? ((err.code ? `[${err.code}] ` : '') + (err.message || String(err))) : '未知错误');
   const v19SplitGoalLines = goal => {
@@ -126,15 +126,6 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
     box.className = isError ? 'error' : 'hint';
     box.hidden = !msg;
   };
-  async function v19ApplyPendingBudget(team) {
-    if (!pendingCreateBudget || !team || team.name !== pendingCreateBudget.teamName) return;
-    const payload = pendingCreateBudget.budget;
-    pendingCreateBudget = null;
-    try {
-      await api('/teams/' + encodeURIComponent(team.id) + '/budget', 'POST', payload);
-      await refresh(true);
-    } catch (err) { notice('创建后写入预算失败：' + v19FmtErr(err)); }
-  }
   function v19BuildGovernanceCard(team) {
     const wrap = node('section', undefined, 'v19-card v19-gov-card');
     wrap.dataset.v19Panel = 'governance'; wrap.dataset.v19Team = team.id;
@@ -185,6 +176,8 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
         const tVal = Number(inTok.value); body.maxTeamTokensSoft = inTok.value && Number.isInteger(tVal) && tVal >= 1 ? tVal : null;
         const dVal = Number(inDur.value); body.maxTaskDurationMs = inDur.value && Number.isFinite(dVal) && dVal >= 1 ? Math.round(dVal * 1000) : null;
         const aVal = Number(inAtt.value); body.maxTeamAttempts = inAtt.value && Number.isInteger(aVal) && aVal >= 1 ? aVal : null;
+        if (cfg.maxInFlight !== undefined && cfg.maxInFlight !== null) body.maxInFlight = cfg.maxInFlight;
+        if (cfg.sameErrorBreakerThreshold !== undefined && cfg.sameErrorBreakerThreshold !== null) body.sameErrorBreakerThreshold = cfg.sameErrorBreakerThreshold;
         await api('/teams/' + encodeURIComponent(team.id) + '/budget', 'POST', body);
         v19SetCardStatus(statusEl, '已更新团队运行预算限制。');
         notice('已保存运行预算限制。');
@@ -487,7 +480,7 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
     const prAct = node('div', undefined, 'actions'); prAct.append(prBtn); prSec.append(prGrid, prAct);
 
     const latestObs = prReconcileByTeam.get(team.id)?.observation || prLinks.at(-1)?.lastObservation || null;
-    const confirmedPublish = (Array.isArray(team.publishIntents) ? team.publishIntents : []).some(i => i.status === 'confirmed' || i.receipt?.branch);
+    const confirmedPublish = (Array.isArray(team.publishIntents) ? team.publishIntents : []).some(i => ['published', 'confirmed'].includes(i.status) || i.receipt?.branch) || cands.some(c => c.localPublish?.branch);
     if (latestObs || prLinks.length) {
       const pills = node('div', undefined, 'v19-pills'); pills.dataset.v19PrPills = '1';
       const localIntegrated = Boolean(team.lastMerge?.branch || confirmedPublish || latestObs?.localFacts?.publishedLocally);
@@ -559,25 +552,11 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
         } catch (err) { out.className = 'error'; out.textContent = v19FmtErr(err); }
       });
     }
-    const teamForm = $('team-form');
-    if (teamForm && !teamForm.dataset.v19Bound) {
-      teamForm.dataset.v19Bound = '1';
-      teamForm.addEventListener('submit', () => {
-        const nameVal = teamForm.querySelector('input[name="name"]')?.value?.trim();
-        const tVal = Number($('team-soft-token')?.value); const dVal = Number($('team-max-duration')?.value); const aVal = Number($('team-max-attempts')?.value);
-        const b = {};
-        if (Number.isInteger(tVal) && tVal >= 1) b.maxTeamTokensSoft = tVal;
-        if (Number.isFinite(dVal) && dVal >= 1) b.maxTaskDurationMs = Math.round(dVal * 1000);
-        if (Number.isInteger(aVal) && aVal >= 1) b.maxTeamAttempts = aVal;
-        pendingCreateBudget = nameVal && Object.keys(b).length ? { teamName: nameVal, budget: b } : null;
-      }, { capture: true });
-    }
     const ov = $('overview');
     if (ov && !ov.dataset.v19ObsBound && typeof MutationObserver !== 'undefined') {
       ov.dataset.v19ObsBound = '1';
       new MutationObserver(() => {
         if (!currentTeam || currentTeam.id !== selectedTeam) return;
-        if (pendingCreateBudget && currentTeam.name === pendingCreateBudget.teamName) v19ApplyPendingBudget(currentTeam);
         if (currentTeam.workspaceMode !== 'git-worktree' && !ov.querySelector('[data-v19-panel="governance"]')) ov.append(v19BuildGovernanceCard(currentTeam));
       }).observe(ov, { childList: true });
     }
@@ -650,12 +629,22 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
   try { applyTheme(localStorage.getItem('superagent-dsh-theme') || 'auto'); } catch { applyTheme('auto'); }
 
   let hostThemeObserver = null;
+  let mediaThemeQuery = null;
+  const onMediaThemeChange = () => {
+    if (themePreference === 'auto') syncEffectiveTheme();
+  };
   if (isShadow && typeof MutationObserver !== 'undefined') {
     hostThemeObserver = new MutationObserver(() => {
       if (themePreference === 'auto') syncEffectiveTheme();
     });
-    hostThemeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'data-color-mode', 'style'] });
-    if (document.body) hostThemeObserver.observe(document.body, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] });
+    hostThemeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'data-dsh-theme', 'data-color-mode', 'style'] });
+    if (document.body) hostThemeObserver.observe(document.body, { attributes: true, attributeFilter: ['class', 'data-theme', 'data-dsh-theme', 'style'] });
+  }
+  if (isShadow && typeof matchMedia === 'function') {
+    try {
+      mediaThemeQuery = matchMedia('(prefers-color-scheme: dark)');
+      mediaThemeQuery.addEventListener?.('change', onMediaThemeChange);
+    } catch {}
   }
 
   function appendInlineMarkdown(parent, text) {
@@ -798,7 +787,9 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
 
   async function request(url, reqOptions = {}, html = false) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), reqOptions.method && reqOptions.method !== 'GET' ? 15000 : 8000);
+    const isLong = /\/teams\/[^/]+\/(?:merge|candidates|publish|pr\/|remote\/|verify|accept-checked)|\/repo\/probe/.test(url);
+    const timeoutMs = isLong ? 125000 : (reqOptions.method && reqOptions.method !== 'GET' ? 15000 : 8000);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(url, {
         ...reqOptions,
@@ -808,7 +799,13 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
         mode: 'same-origin',
         redirect: 'error',
       });
-      return { response, result: html ? await response.text() : await response.json() };
+      const rawText = await response.text();
+      let result = rawText;
+      if (!html) {
+        try { result = rawText ? JSON.parse(rawText) : {}; }
+        catch { result = { error: rawText.slice(0, 200) || `HTTP ${response.status}` }; }
+      }
+      return { response, result };
     } catch (error) {
       const failure = new Error(error.name === 'AbortError' ? '宿主服务响应超时' : '无法读取进程内引擎，请确认插件已启用');
       failure.connection = true;
@@ -845,7 +842,8 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
       for (let attempt = 0; attempt < 2; attempt++) {
         const sentToken = token;
         const headers = { 'Content-Type': 'application/json', ...(sentToken ? { 'x-engine-token': sentToken } : {}), ...extraHeaders };
-        const payload = mutation && data !== undefined && activeSessionId && typeof data === 'object' && !Array.isArray(data) && data.sessionId === undefined
+        const injectSession = mutation && data !== undefined && activeSessionId && typeof data === 'object' && !Array.isArray(data) && data.sessionId === undefined && !(path === '/tasks' && data.teamId !== undefined);
+        const payload = injectSession
           ? { ...data, sessionId: activeSessionId }
           : data;
         const { response, result } = await request(`${apiBase}/api${path}`, {
@@ -862,7 +860,9 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
           throw error;
         }
         if (!response.ok) {
-          const error = new Error(result.error || '请求失败');
+          const error = new Error(result?.error || '请求失败');
+          if (result?.code) error.code = result.code;
+          if (result?.details) error.details = result.details;
           if (response.status >= 500) {
             error.connection = true;
             connectionError(error.message + '。正在自动重连；当前草稿已保留。');
@@ -1774,21 +1774,26 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
   function startChangesPoll() {
     if (changePollTimer || disposed) return;
     streamConnected = true;
-    changePollTimer = setInterval(async () => {
-      if (disposed || document.hidden) return;
+    const pollOnce = async () => {
+      if (disposed || document.hidden || changePollFlight) return;
+      changePollFlight = true;
       try {
-        const qs = new URLSearchParams({ since: String(lastChangeSeq) });
+        const sinceVal = lastChangeSeq === null ? 0 : lastChangeSeq;
+        const qs = new URLSearchParams({ since: String(sinceVal) });
         if (activeSessionId) qs.set('sessionId', activeSessionId);
         const res = await api('/changes?' + qs.toString());
         if (typeof res.seq === 'number') {
-          const prev = lastChangeSeq;
+          const hadBaseline = lastChangeSeq !== null;
           lastChangeSeq = res.seq;
-          if (prev > 0 && Array.isArray(res.items)) {
+          if (hadBaseline && Array.isArray(res.items)) {
             for (const item of res.items) handleLiveEvent(item.event, item.payload);
           }
         }
       } catch {}
-    }, 1200);
+      finally { changePollFlight = false; }
+    };
+    pollOnce();
+    changePollTimer = setInterval(pollOnce, 1200);
   }
 
   async function connectStream() {
@@ -2001,10 +2006,14 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
     const modeSelect = $('team-workspace-mode');
     const repoField = $('team-repo-path-field');
     const repoInput = $('team-repo-path');
+    const probeRow = $('team-repo-probe-row');
+    const probeOut = $('repo-probe-result');
     if (!modeSelect || !repoField || !repoInput) return;
     const isGit = modeSelect.value === 'git-worktree';
     repoField.hidden = !isGit;
     repoInput.required = isGit;
+    if (probeRow) probeRow.hidden = !isGit;
+    if (!isGit && probeOut) probeOut.hidden = true;
   }
   if ($('team-workspace-mode')) {
     $('team-workspace-mode').addEventListener('change', () => {
@@ -2040,11 +2049,16 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
       return;
     }
     createRequest ??= crypto.randomUUID();
+    const b = {}, tVal = Number($('team-soft-token')?.value), dVal = Number($('team-max-duration')?.value), aVal = Number($('team-max-attempts')?.value);
+    if (Number.isInteger(tVal) && tVal >= 1) b.maxTeamTokensSoft = tVal;
+    if (Number.isFinite(dVal) && dVal >= 1) b.maxTaskDurationMs = Math.round(dVal * 1000);
+    if (Number.isInteger(aVal) && aVal >= 1) b.maxTeamAttempts = aVal;
     const payload = {
       requestId: createRequest,
       name: data.get('name').trim(),
       goal: data.get('goal').trim(),
       members,
+      ...(Object.keys(b).length ? { budget: b } : {}),
       ...(activeSessionId ? { sessionId: activeSessionId } : {}),
       ...(workspaceMode === 'git-worktree' ? { workspaceMode: 'git-worktree', repoPath } : {}),
     };
@@ -2053,7 +2067,11 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
     try {
       const r = await api('/teams', 'POST', payload), team = r.team || r;
       memberDifficulties.set(team.id, new Map(diffEntries));
-      changeTeam(team.id); $('team-dialog').close(); form.reset(); syncWorkspaceModeField(); createRequest = null;
+      changeTeam(team.id); $('team-dialog').close(); form.reset();
+      if ($('team-soft-token')) $('team-soft-token').value = '';
+      if ($('team-max-duration')) $('team-max-duration').value = '';
+      if ($('team-max-attempts')) $('team-max-attempts').value = '';
+      syncWorkspaceModeField(); createRequest = null;
       $('member-fields').replaceChildren(); addMember(); addMember();
       notice(workspaceMode === 'git-worktree'
         ? 'Git Worktree 团队已保存为筹备状态（已锁定基线提交，不会改动当前分支）。确认职责后点击“创建成员任务并开始”。'
@@ -2138,6 +2156,7 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
       clearTimeout(sseDebounce);
       stopStream();
       hostThemeObserver?.disconnect();
+      mediaThemeQuery?.removeEventListener?.('change', onMediaThemeChange);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     },
   };

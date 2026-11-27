@@ -105,38 +105,76 @@ export class BudgetGuard {
     });
   }
 
+  peekReserveBlock(teamId) {
+    if (!teamId) return { blocked: false };
+    const ledger = this.store.budgetLedger?.(teamId);
+    if (!ledger) return { blocked: false };
+    const cfg = ledger.config ?? {};
+    const hasAnyLimit = Boolean(cfg.maxTeamAttempts || cfg.maxInFlight || cfg.maxTaskDurationMs || cfg.maxTeamTokensSoft || cfg.sameErrorBreakerThreshold);
+    if (!hasAnyLimit) return { blocked: false };
+    if (ledger.frozenReason) {
+      return {
+        blocked: true,
+        code: 'BUDGET_FROZEN',
+        budgetReason: ledger.frozenReason,
+        message: `Team dispatch blocked by budget guard: ${ledger.frozenReason}`,
+      };
+    }
+    if (cfg.maxInFlight && ledger.inFlightAttemptIds.length >= cfg.maxInFlight) {
+      return {
+        blocked: true,
+        code: 'BUDGET_EXCEEDED_CONCURRENCY',
+        message: `Team in-flight concurrency limit reached (${ledger.inFlightAttemptIds.length}/${cfg.maxInFlight})`,
+      };
+    }
+    if (cfg.maxTeamAttempts && ledger.attemptsReserved >= cfg.maxTeamAttempts) {
+      return {
+        blocked: true,
+        code: 'BUDGET_EXCEEDED_ATTEMPTS',
+        message: `Team hard attempt budget exhausted (${ledger.attemptsReserved}/${cfg.maxTeamAttempts})`,
+      };
+    }
+    return { blocked: false };
+  }
+
   reserveAttempt(teamId, attemptId) {
     if (!teamId) return { reserved: false, reason: 'no_team' };
-    return this.store.transaction(() => {
+    const outcome = this.store.transaction(() => {
       const ledger = this.store.budgetLedger(teamId);
-      if (!ledger) return { reserved: false, enforced: false };
+      if (!ledger) return { reservation: { reserved: false, enforced: false } };
       const cfg = ledger.config ?? {};
       const hasAnyLimit = Boolean(cfg.maxTeamAttempts || cfg.maxInFlight || cfg.maxTaskDurationMs || cfg.maxTeamTokensSoft || cfg.sameErrorBreakerThreshold);
-      if (!hasAnyLimit) return { reserved: false, enforced: false };
+      if (!hasAnyLimit) return { reservation: { reserved: false, enforced: false } };
 
       if (ledger.frozenReason) {
-        throw Object.assign(new Error(`Team dispatch blocked by budget guard: ${ledger.frozenReason}`), {
-          code: 'BUDGET_FROZEN',
-          budgetReason: ledger.frozenReason,
-        });
+        return {
+          blockedError: Object.assign(new Error(`Team dispatch blocked by budget guard: ${ledger.frozenReason}`), {
+            code: 'BUDGET_FROZEN',
+            budgetReason: ledger.frozenReason,
+          }),
+        };
       }
       if (ledger.inFlightAttemptIds.includes(attemptId)) {
-        return { reserved: true, idempotent: true, ledger };
+        return { reservation: { reserved: true, idempotent: true, ledger } };
       }
       if (cfg.maxInFlight && ledger.inFlightAttemptIds.length >= cfg.maxInFlight) {
-        throw Object.assign(
-          new Error(`Team in-flight concurrency limit reached (${ledger.inFlightAttemptIds.length}/${cfg.maxInFlight})`),
-          { code: 'BUDGET_EXCEEDED_CONCURRENCY' },
-        );
+        return {
+          blockedError: Object.assign(
+            new Error(`Team in-flight concurrency limit reached (${ledger.inFlightAttemptIds.length}/${cfg.maxInFlight})`),
+            { code: 'BUDGET_EXCEEDED_CONCURRENCY' },
+          ),
+        };
       }
       if (cfg.maxTeamAttempts && ledger.attemptsReserved >= cfg.maxTeamAttempts) {
         ledger.frozenReason = 'budget_exceeded:attempts';
         ledger.updatedAt = now();
         this.store.saveBudgetLedger(ledger);
-        throw Object.assign(
-          new Error(`Team hard attempt budget exhausted (${ledger.attemptsReserved}/${cfg.maxTeamAttempts})`),
-          { code: 'BUDGET_EXCEEDED_ATTEMPTS' },
-        );
+        return {
+          blockedError: Object.assign(
+            new Error(`Team hard attempt budget exhausted (${ledger.attemptsReserved}/${cfg.maxTeamAttempts})`),
+            { code: 'BUDGET_EXCEEDED_ATTEMPTS' },
+          ),
+        };
       }
 
       ledger.attemptsReserved += 1;
@@ -144,13 +182,17 @@ export class BudgetGuard {
       ledger.updatedAt = now();
       this.store.saveBudgetLedger(ledger);
       return {
-        reserved: true,
-        enforced: true,
-        attemptsReserved: ledger.attemptsReserved,
-        inFlightCount: ledger.inFlightAttemptIds.length,
-        maxTaskDurationMs: cfg.maxTaskDurationMs ?? null,
+        reservation: {
+          reserved: true,
+          enforced: true,
+          attemptsReserved: ledger.attemptsReserved,
+          inFlightCount: ledger.inFlightAttemptIds.length,
+          maxTaskDurationMs: cfg.maxTaskDurationMs ?? null,
+        },
       };
     });
+    if (outcome?.blockedError) throw outcome.blockedError;
+    return outcome.reservation;
   }
 
   releaseAttempt(teamId, attemptId) {

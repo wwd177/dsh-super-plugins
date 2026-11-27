@@ -10,9 +10,9 @@ import { fileURLToPath } from 'node:url';
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
 
-const ENGINE_VERSION = '0.20.2-dsh.1';
-const SUPERAGENT_VERSION = '1.25.2-dsh.1';
-const SUPER_TEAMS_VERSION = '0.17.2-dsh.1';
+const ENGINE_VERSION = '0.20.3-dsh.1';
+const SUPERAGENT_VERSION = '1.25.3-dsh.1';
+const SUPER_TEAMS_VERSION = '0.17.3-dsh.1';
 
 const PLUGIN_NAMES = ['@local/dsh-superagent-menu', '@local/dsh-super-teams'];
 const SKILL_ENTRIES = [
@@ -45,6 +45,9 @@ function parseArgs(argv) {
     else if (arg === '--dsh-cli' && argv[i + 1]) opts.dshCli = argv[++i];
     else if (arg === '--dsh-install-dir' && argv[i + 1]) opts.dshInstallDir = argv[++i];
     else if (arg === '--backup-root' && argv[i + 1]) opts.backupRoot = argv[++i];
+    else if (arg === '--profile' || arg === '--dsh-home' || arg === '--dsh-cli' || arg === '--dsh-install-dir' || arg === '--backup-root') {
+      throw new Error(`Option ${arg} requires a value`);
+    }
     else if (arg === '-h' || arg === '--help') {
       console.log([
         'Usage: node scripts/install.mjs [options]',
@@ -64,6 +67,10 @@ function parseArgs(argv) {
       ].join('\n'));
       process.exit(0);
     }
+  }
+  opts.profile = String(opts.profile || '').trim();
+  if (!opts.profile || opts.profile === '.' || opts.profile === '..' || /[\/\\]|\.\.|[\x00-\x1f\x7f]/.test(opts.profile)) {
+    throw new Error(`Invalid profile name "${opts.profile}": must be a single safe directory segment`);
   }
   opts.dshHome = path.resolve(opts.dshHome);
   return opts;
@@ -213,9 +220,12 @@ async function copyFileWithRetry(srcFile, dstFile, attempts = 8) {
   }
 }
 
-async function syncPlainTreeInPlace(srcDir, dstDir) {
+async function syncPlainTreeInPlace(srcDir, dstDir, allowedRoot = null) {
   const srcFull = path.resolve(srcDir);
   const dstFull = path.resolve(dstDir);
+  if (allowedRoot) {
+    assertSafeDeletionTarget(fs.realpathSync(allowedRoot), dstFull);
+  }
   try {
     const st = fs.lstatSync(dstFull);
     if (st.isSymbolicLink() || !st.isDirectory()) {
@@ -233,7 +243,11 @@ async function syncPlainTreeInPlace(srcDir, dstDir) {
 
   for (const existing of fs.readdirSync(dstFull, { withFileTypes: true })) {
     const dstChild = path.join(dstFull, existing.name);
-    if (!expected.has(existing.name) || expected.get(existing.name) !== existing.isDirectory()) {
+    let childIsSymlink = existing.isSymbolicLink();
+    try {
+      childIsSymlink = fs.lstatSync(dstChild).isSymbolicLink();
+    } catch {}
+    if (childIsSymlink || !expected.has(existing.name) || expected.get(existing.name) !== existing.isDirectory()) {
       await removeEntryWithRetry(dstChild);
     }
   }
@@ -242,14 +256,22 @@ async function syncPlainTreeInPlace(srcDir, dstDir) {
     const srcChild = path.join(srcFull, entry.name);
     const dstChild = path.join(dstFull, entry.name);
     if (entry.isDirectory()) {
-      await syncPlainTreeInPlace(srcChild, dstChild);
+      await syncPlainTreeInPlace(srcChild, dstChild, allowedRoot);
     } else if (entry.isFile()) {
+      try {
+        if (fs.lstatSync(dstChild).isSymbolicLink()) await removeEntryWithRetry(dstChild);
+      } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
+      }
       await copyFileWithRetry(srcChild, dstChild);
     }
   }
 }
 
-async function replaceDirectoryAtomicOrInPlace(stagedDir, dstDir) {
+async function replaceDirectoryAtomicOrInPlace(stagedDir, dstDir, allowedRoot = null) {
+  if (allowedRoot) {
+    assertSafeDeletionTarget(fs.realpathSync(allowedRoot), dstDir);
+  }
   try {
     const st = fs.lstatSync(dstDir);
     if (st.isSymbolicLink()) await removeEntryWithRetry(dstDir);
@@ -260,8 +282,8 @@ async function replaceDirectoryAtomicOrInPlace(stagedDir, dstDir) {
     await removeEntryWithRetry(dstDir);
     await renameWithRetry(stagedDir, dstDir);
   } catch (err) {
-    if (!TRANSIENT_FS_CODES.has(err?.code)) throw err;
-    await syncPlainTreeInPlace(stagedDir, dstDir);
+    if (!TRANSIENT_FS_CODES.has(err?.code) && err?.code !== 'EXDEV') throw err;
+    await syncPlainTreeInPlace(stagedDir, dstDir, allowedRoot);
     try { await removeEntryWithRetry(stagedDir); } catch {}
   }
 }
@@ -433,12 +455,16 @@ function verifyInstallation({ dshHome, profile }) {
   }
   const manifest = JSON.parse(fs.readFileSync(profileManifestPath, 'utf8'));
   const stageRoot = path.join(dshHome, 'local-packages', 'dsh-super-plugins');
-  const stageRootNorm = stageRoot.replace(/\\/g, '/');
+  const stageRootReal = fs.existsSync(stageRoot) ? fs.realpathSync(stageRoot) : path.resolve(stageRoot);
+  const stageRootNorm = (process.platform === 'win32' ? stageRootReal.toLowerCase() : stageRootReal).replace(/\\/g, '/');
 
   for (const pkgName of PLUGIN_NAMES) {
     const dep = String(manifest?.dependencies?.[pkgName] || '');
-    const depNorm = dep.replace(/^(?:link|file):/, '').replace(/\\/g, '/');
-    if (!/^(?:link|file):/.test(dep) || !depNorm.startsWith(stageRootNorm)) {
+    const rawTarget = dep.replace(/^(?:link|file):/, '');
+    const depResolved = rawTarget ? path.resolve(path.dirname(profileManifestPath), rawTarget) : '';
+    const depReal = depResolved && fs.existsSync(depResolved) ? fs.realpathSync(depResolved) : path.resolve(rawTarget);
+    const depNorm = (process.platform === 'win32' ? depReal.toLowerCase() : depReal).replace(/\\/g, '/');
+    if (!/^(?:link|file):/.test(dep) || (depNorm !== stageRootNorm && !depNorm.startsWith(`${stageRootNorm}/`))) {
       throw new Error(`Expected ${pkgName} dependency to point inside "${stageRootNorm}", got "${dep}"`);
     }
     const bundles = Array.isArray(manifest?.dsh?.profile?.bundles) ? manifest.dsh.profile.bundles : [];
@@ -468,6 +494,13 @@ function verifyInstallation({ dshHome, profile }) {
     }
 
     const stagedFiles = collectRelativeFiles(stagedDir);
+    const actualFiles = collectRelativeFiles(installedDir);
+    if (actualFiles.length !== stagedFiles.length || actualFiles.some((f, idx) => f !== stagedFiles[idx])) {
+      const stagedSet = new Set(stagedFiles);
+      const stray = actualFiles.filter(f => !stagedSet.has(f));
+      const missing = stagedFiles.filter(f => !actualFiles.includes(f));
+      throw new Error(`Skill file inventory mismatch in ${entry.name} (stray=[${stray.join(',')}], missing=[${missing.join(',')}])`);
+    }
     for (const relFile of stagedFiles) {
       const sHash = sha256File(path.join(stagedDir, relFile));
       const dPath = path.join(installedDir, relFile);
@@ -924,7 +957,7 @@ async function performInstallLocked(opts) {
   }
   try {
     if (inPlaceStageBackup) {
-      await syncPlainTreeInPlace(tempStageRoot, stageRoot);
+      await syncPlainTreeInPlace(tempStageRoot, stageRoot, dshHome);
       await removeEntryWithRetry(tempStageRoot).catch(() => {});
     } else {
       await renameWithRetry(tempStageRoot, stageRoot);
@@ -956,7 +989,7 @@ async function performInstallLocked(opts) {
         }
         files[rel] = h;
       }
-      await replaceDirectoryAtomicOrInPlace(tempSkillDst, dst);
+      await replaceDirectoryAtomicOrInPlace(tempSkillDst, dst, dshHome);
       const actualFiles = collectRelativeFiles(dst);
       if (actualFiles.length !== expectedFiles.length || actualFiles.some((rel, idx) => rel !== expectedFiles[idx] || sha256File(path.join(dst, rel)) !== files[rel])) {
         throw new Error(`Installed skill verification mismatch after swap for ${entry.name}`);
@@ -992,7 +1025,7 @@ async function performInstallLocked(opts) {
         try { removeEntrySafe(stageRoot); } catch {}
         try { fs.renameSync(prevStageBackup, stageRoot); } catch {}
       } else if (inPlaceStageBackup) {
-        try { await syncPlainTreeInPlace(prevStageBackup, stageRoot); } catch {}
+        try { await syncPlainTreeInPlace(prevStageBackup, stageRoot, dshHome); } catch {}
         try { removeEntrySafe(prevStageBackup); } catch {}
       }
     } else if (
@@ -1009,8 +1042,11 @@ async function performInstallLocked(opts) {
     for (const entry of SKILL_ENTRIES) {
       const dst = path.join(skillRoot, entry.name);
       const backedSkill = path.join(backupRoot, `skill-${entry.name}`);
-      if (!fs.existsSync(dst) && fs.existsSync(backedSkill)) {
-        try { copyPlainTree(backedSkill, dst); } catch {}
+      if (fs.existsSync(backedSkill)) {
+        try {
+          await removeEntryWithRetry(dst);
+          copyPlainTree(backedSkill, dst);
+        } catch {}
       }
     }
     throw err;
@@ -1038,7 +1074,7 @@ async function performInstallLocked(opts) {
       .map(d => ({ name: d.name, full: path.join(backupParent, d.name), mtime: fs.statSync(path.join(backupParent, d.name)).mtimeMs }))
       .sort((a, b) => b.mtime - a.mtime);
     for (const old of dirs.slice(2)) {
-      fs.rmSync(old.full, { recursive: true, force: true });
+      try { fs.rmSync(old.full, { recursive: true, force: true }); } catch {}
     }
   }
 
@@ -1125,7 +1161,7 @@ async function performUninstallLocked(opts) {
     for (const targetPath of targets) {
       try {
         if (assertSafeDeletionTarget(dshHome, targetPath)) {
-          removeEntrySafe(targetPath);
+          await removeEntryWithRetry(targetPath);
         }
       } catch (err) {
         failures.push(`${targetPath}: ${err.message}`);
@@ -1149,7 +1185,7 @@ async function performUninstallLocked(opts) {
   const legacySharedExists = fs.existsSync(legacySharedDataDir);
   if (purgeData) {
     if (assertSafeDeletionTarget(dshHome, profileDataDir)) {
-      removeEntrySafe(profileDataDir);
+      await removeEntryWithRetry(profileDataDir);
     }
   }
 

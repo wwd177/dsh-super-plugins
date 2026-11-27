@@ -159,15 +159,15 @@ export function assertApprovalValid({
       { code: 'APPROVAL_TARGET_MISMATCH' },
     );
   }
-  if (currentGateHash && approval.gateHash && approval.gateHash !== currentGateHash) {
+  if (currentGateHash && approval.gateHash !== currentGateHash) {
     throw Object.assign(
-      new Error(`Goal criteria gate changed (approval gate=${approval.gateHash.slice(0, 12)}, current=${currentGateHash.slice(0, 12)}); re-approval required`),
+      new Error(`Goal criteria gate changed (approval gate=${String(approval.gateHash ?? 'none').slice(0, 12)}, current=${currentGateHash.slice(0, 12)}); re-approval required`),
       { code: 'APPROVAL_GATE_DRIFT' },
     );
   }
-  if (currentCriteriaRevision !== null && approval.criteriaRevision !== null && approval.criteriaRevision !== currentCriteriaRevision) {
+  if (currentCriteriaRevision !== null && currentCriteriaRevision !== undefined && approval.criteriaRevision !== currentCriteriaRevision) {
     throw Object.assign(
-      new Error(`Goal criteria revision changed (${approval.criteriaRevision} -> ${currentCriteriaRevision}); re-approval required`),
+      new Error(`Goal criteria revision changed (${approval.criteriaRevision ?? 'none'} -> ${currentCriteriaRevision}); re-approval required`),
       { code: 'APPROVAL_CRITERIA_DRIFT' },
     );
   }

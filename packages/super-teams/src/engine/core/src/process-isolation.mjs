@@ -136,16 +136,21 @@ export function buildIsolatedTestEnv(testTmpDir, {
 
     const env = {};
     const allowedUpper = new Set(SAFE_TEST_ENV_KEYS);
+    let inheritedPath = '';
     for (const [key, val] of Object.entries(process.env)) {
       if (val === undefined) continue;
       const upper = key.toUpperCase();
       if (!allowedUpper.has(upper)) continue;
       if (SECRET_ENV_PREFIXES.some(prefix => upper.startsWith(prefix))) continue;
+      if (process.platform === 'win32' ? upper === 'PATH' : key === 'PATH') {
+        if (!inheritedPath && val) inheritedPath = String(val);
+        continue;
+      }
       env[key] = val;
     }
 
     // Filter personal-directory entries from PATH when requested and prepend pinned toolchain roots.
-    const rawPath = env.PATH || env.Path || '';
+    const rawPath = inheritedPath || process.env.PATH || (process.platform === 'win32' ? (process.env.Path || '') : '');
     const realHome = process.env.HOME;
     const realProfile = process.env.USERPROFILE;
     let pathParts = rawPath.split(path.delimiter).filter(Boolean);
@@ -157,9 +162,6 @@ export function buildIsolatedTestEnv(testTmpDir, {
     }
     if (pathParts.length) {
       env.PATH = pathParts.join(path.delimiter);
-      if (process.platform === 'win32' && 'Path' in env && !('PATH' in process.env)) {
-        env.Path = env.PATH;
-      }
     }
 
     env.HOME = isolatedRoot;

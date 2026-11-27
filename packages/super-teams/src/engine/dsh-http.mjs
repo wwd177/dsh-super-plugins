@@ -32,7 +32,10 @@ async function readJsonBody(req) {
   const chunks = [];
   let bytes = 0, timer;
   const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error('读取请求体超时')), 15000);
+    timer = setTimeout(() => {
+      try { req.destroy(); } catch {}
+      reject(new Error('读取请求体超时'));
+    }, 15000);
     timer.unref?.();
   });
   try {
@@ -43,7 +46,7 @@ async function readJsonBody(req) {
           if (bytes > 2 * 1024 * 1024) throw new Error('请求超过 2 MiB，请拆分原文');
           chunks.push(chunk);
         }
-      })(),
+      })().catch(error => { if (!req.destroyed) throw error; }),
       timeout,
     ]);
   } finally {
@@ -167,10 +170,14 @@ export function createDshEngineRouter({
       const fencedMode = typeof activeFence === 'function';
       if (fencedMode) {
         if (!activeFence(req)) return send(403, { error: 'DeepSeek Harness 会话鉴权未通过' });
-        if (req.method !== 'GET' && req.method !== 'HEAD' && req.headers?.origin && /^https?:/i.test(req.headers.origin) && req.headers?.host) {
-          let originHost = '';
-          try { originHost = new URL(req.headers.origin).host; } catch {}
-          if (originHost !== req.headers.host) return send(403, { error: '跨站写请求被拒绝' });
+        if (req.method !== 'GET' && req.method !== 'HEAD' && req.headers?.origin && req.headers.origin !== 'null') {
+          let allowedOrigin = false;
+          try {
+            const o = new URL(req.headers.origin);
+            if (o.protocol === 'dsh-app:' && o.host === 'app') allowedOrigin = true;
+            else if ((o.protocol === 'http:' || o.protocol === 'https:') && req.headers?.host && o.host === req.headers.host) allowedOrigin = true;
+          } catch {}
+          if (!allowedOrigin) return send(403, { error: '跨站写请求被拒绝' });
         }
       } else {
         res.setHeader('X-Frame-Options', 'DENY');
@@ -400,7 +407,16 @@ export function createDshEngineRouter({
         }
         if (parts[3] === 'remote') {
           if (req.method === 'POST' && parts[4] === 'push') return send(200, await engine.pushCandidateRemote(teamId, input));
-          if (req.method === 'POST' && parts[4] === 'pr-create') return send(200, await engine.createPullRequestIdempotent(teamId, input));
+          if (req.method === 'POST' && parts[4] === 'pr-create') {
+            try { return send(200, await engine.createPullRequestIdempotent(teamId, input)); }
+            catch (error) {
+              if (error.code === 'REMOTE_PR_TRANSPORT_UNAVAILABLE' || /REMOTE_PR_TRANSPORT_UNAVAILABLE|Authorized write transport\.createPullRequest is required|transport unavailable|No PR transport/i.test(error.message || '')) {
+                error.status = 501;
+                error.code = 'REMOTE_PR_TRANSPORT_UNAVAILABLE';
+              }
+              throw error;
+            }
+          }
           if (req.method === 'POST' && parts[4] === 'reconcile') return send(200, await engine.reconcileRemoteIntents(teamId, input));
           if (req.method === 'POST' && parts[4] === 'unknown' && parts[5] === 'resolve') return send(200, engine.resolveUnknownPrIntent(teamId, input));
           if (req.method === 'POST' && parts[4] === 'events') return send(200, engine.ingestRemoteFailureEvent(teamId, input));
@@ -434,7 +450,7 @@ export function createDshEngineRouter({
         if (parts[3] === 'sources') {
           const scoped = engine.contextForTeam(teamId);
           if (req.method === 'GET' && parts[4]) {
-            return send(200, scoped.readSource(parts[4], { offset: integer(query.offset, 0, 1e9), limit: integer(query.limit, 8192, 65536) }));
+            return send(200, scoped.readSource(decodeURIComponent(parts[4]), { offset: integer(query.offset, 0, 1e9), limit: integer(query.limit, 8192, 65536) }));
           }
           if (req.method === 'GET') return send(200, { sources: scoped.listSources() });
           if (req.method === 'POST') {
@@ -451,14 +467,14 @@ export function createDshEngineRouter({
         if (typeof input.text !== 'string' || !input.text.trim()) throw new Error('原文不能为空');
         return send(201, contextStore.addSource(input));
       }
-      if (req.method === 'GET' && parts[1] === 'sources' && parts[2]) {
-        return send(200, contextStore.readSource(parts[2], { offset: integer(query.offset, 0, 1e9), limit: integer(query.limit, 8192, 65536) }));
+      if (req.method === 'GET' && parts[0] === 'api' && parts[1] === 'sources' && parts[2]) {
+        return send(200, contextStore.readSource(decodeURIComponent(parts[2]), { offset: integer(query.offset, 0, 1e9), limit: integer(query.limit, 8192, 65536) }));
       }
       if (req.method === 'POST' && pathname === '/api/tasks') {
         if (typeof input.goal !== 'string' || !input.goal.trim()) throw new Error('请填写任务目标');
         return send(201, await engine.submit(input));
       }
-      if (parts[1] === 'tasks' && parts[2]) {
+      if (parts[0] === 'api' && parts[1] === 'tasks' && parts[2]) {
         const id = decodeURIComponent(parts[2]);
         if (req.method === 'GET' && query.teamId && (await engine.get(id)).teamId !== query.teamId) {
           throw new Error('Task does not belong to the requested team');

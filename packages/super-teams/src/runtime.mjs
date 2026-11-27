@@ -504,7 +504,7 @@ export class DshSuperTeamsRuntime {
       }
       if (a.action === 'candidate_publish_local') {
         if (!a.candidateId || !a.approvalId) throw new Error('candidateId and approvalId are required');
-        return engine.publishCandidateLocal(a.teamId, { candidateId: a.candidateId, approvalId: a.approvalId, branchName: a.branchName });
+        return engine.publishCandidateLocal(a.teamId, { candidateId: a.candidateId, approvalId: a.approvalId, branchName: a.branchName, expectedOldOid: a.expectedOldOid });
       }
       if (a.action === 'publish_reconcile') return engine.reconcilePublishIntents(a.teamId);
       if (a.action === 'candidate_base_drift') {
@@ -563,7 +563,7 @@ export class DshSuperTeamsRuntime {
       if (a.action === 'remote_unknown_resolve') {
         return engine.resolveUnknownPrIntent(a.teamId, {
           intentId: a.intentId,
-          action: a.reason === 'abandon' ? 'abandon' : 'bind_existing',
+          action: a.resolveAction || (a.reason === 'abandon' ? 'abandon' : 'bind_existing'),
           prNumber: a.prNumber,
           actor,
           note: a.note,
@@ -575,7 +575,7 @@ export class DshSuperTeamsRuntime {
           candidateId: a.candidateId,
           repo: a.repo,
           prNumber: a.prNumber,
-          headSha: a.expectedOldOid,
+          headSha: a.headSha || a.expectedOldOid,
           checkSignature: a.checkSignature,
           failureSummary: a.failureSummary,
           memberId: a.memberId,
@@ -584,7 +584,7 @@ export class DshSuperTeamsRuntime {
       if (a.action === 'remote_drift_resolve') {
         return engine.resolveExternalDrift(a.teamId, {
           deliveryStreamId: a.deliveryStreamId,
-          action: a.newBranch ? 'redirect_new_branch' : 'adopt_as_candidate',
+          action: a.resolveAction || (a.newBranch ? 'redirect_new_branch' : 'adopt_as_candidate'),
           newBranch: a.newBranch,
           actor,
         });
