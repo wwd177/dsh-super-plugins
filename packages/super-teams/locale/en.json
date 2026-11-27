@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Super Teams",
-    "description": "SuperAgent shared persistent engine (0.20.0-dsh.1, core 0.19.1): isolated verification with Windows long-path safety, exact critical-path scheduling, bounded auto-recovery, strict multi-chat session affinity, transactional budget guards, frozen criteria, and read-only PR reconciliation workbench."
+    "description": "SuperAgent shared persistent engine (0.20.1-dsh.1, core 0.19.1): fail-closed multi-wave completeness gates, isolated verification with Windows long-path safety, exact critical-path scheduling, bounded auto-recovery, strict multi-chat session affinity, and read-only PR reconciliation workbench."
   }
 }

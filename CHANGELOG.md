@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.20.1-dsh.1 (SuperAgent `1.25.1-dsh.1` / Super Teams `0.17.1-dsh.1` / Shared Core `0.19.1` / Installer Skill `1.4.0`)
+
+Adds fail-closed multi-wave delivery completeness enforcement across both hosts and records updated live-model blind benchmark results after fixing Wave-2 dependency loop completion:
+
+- **Fail-Closed Multi-Wave Delivery Completeness Gate (`engine.mjs`, `dsh-http.mjs`, `definitions.mjs`, `runtime.mjs`, `public/app.js`)**:
+  - Adds `_analyzeTeamDeliveryCompleteness(teamId)` distinguishing in-flight/unresolved executions (`TEAM_EXECUTION_IN_FLIGHT`) from unaccepted/missing downstream deliverables (`INCOMPLETE_TEAM_DELIVERY`).
+  - `mergeTeam({ apply: false })` surfaces `isPartial`, `readyForDelivery`, `deliveryBlockReason`, `unacceptedTasks`, and `missingDownstreamTasks`.
+  - `mergeTeam({ apply: true })` and default full-team `createCandidate()` (without explicit `taskIds`) refuse HTTP 409 (`TEAM_EXECUTION_IN_FLIGHT`) unconditionally when tasks are executing/unresolved, and refuse HTTP 409 (`INCOMPLETE_TEAM_DELIVERY`) when unaccepted tasks remain unless callers explicitly pass `allowPartial: true` while idle (or pass explicit `taskIds` on `candidate_create`), preserving the exact 8-tool contract (`allowPartial` boolean added on `engine_team`).
+- **Updated External-Repo Live Blind Benchmark (`docs/benchmarks/live-benchmark-v0.20.1.md`)**:
+  - Re-runs the fixed-harness external-repo screening benchmark (`gpt-6.2-sol`, `effort=medium`, `n=4`), confirming complete Wave-1 + Wave-2 integration delivery (eliminating all `ERR_MODULE_NOT_FOUND` failures) while documenting genuine honest task pass deltas and live `TEAM_EXECUTION_IN_FLIGHT` partial-merge blocking.
+
 ## v0.20.0-dsh.1 (SuperAgent `1.25.0-dsh.1` / Super Teams `0.17.0-dsh.1` / Shared Core `0.19.1` / Installer Skill `1.4.0`)
 
 Hardens installer lock coordination, control-plane session semantics, bounded auto-recovery loops, and manual slot resolution across both hosts (real host regressions verified on Windows; POSIX installer/process-birth logic implemented and script-ready pending live macOS/Linux execution):

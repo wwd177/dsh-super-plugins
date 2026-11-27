@@ -428,6 +428,7 @@ export class DshSuperTeamsRuntime {
           integrationCheck: a.integrationCheck,
           candidateId: a.candidateId,
           approvalId: a.approvalId,
+          ...(a.action === 'merge_apply' && a.allowPartial !== undefined ? { allowPartial: a.allowPartial === true } : {}),
         });
       }
       if (a.action === 'criteria_get') return engine.getLatestCriteria(a.teamId);
@@ -435,7 +436,15 @@ export class DshSuperTeamsRuntime {
       if (a.action === 'criteria_freeze') return engine.freezeCriteria(a.teamId, { rawGoal: a.rawGoal, criteria: a.criteria, dispositions: a.dispositions, confirmedBy: a.confirmedBy ?? actor });
       if (a.action === 'criteria_signoff') return engine.recordCriterionSignoff(a.teamId, { criterionId: a.criterionId, candidateId: a.candidateId, signer: a.signer ?? actor, note: a.note });
       if (a.action === 'candidate_list') return engine.listCandidates(a.teamId);
-      if (a.action === 'candidate_create') return engine.createCandidate(a.teamId, { taskIds: a.taskIds, parentCandidateId: a.parentCandidateId, targetRef: a.targetRef, integrationCheck: a.integrationCheck });
+      if (a.action === 'candidate_create') {
+        return engine.createCandidate(a.teamId, {
+          taskIds: a.taskIds,
+          parentCandidateId: a.parentCandidateId,
+          targetRef: a.targetRef,
+          integrationCheck: a.integrationCheck,
+          ...(a.allowPartial !== undefined ? { allowPartial: a.allowPartial === true } : {}),
+        });
+      }
       if (a.action === 'candidate_get') {
         if (!a.candidateId) throw new Error('candidateId is required');
         return engine.getCandidate(a.teamId, a.candidateId);

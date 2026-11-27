@@ -367,7 +367,7 @@ export function createDshEngineRouter({
           return send(200, await engine.mergeTeam(teamId, { apply: false, integrationCheck: input?.integrationCheck ?? null }));
         }
         if (req.method === 'POST' && parts[3] === 'merge-apply' && parts.length === 4) {
-          return send(200, await engine.mergeTeam(teamId, { apply: true, branchName: input?.branchName ?? null, integrationCheck: input?.integrationCheck ?? null, candidateId: input?.candidateId ?? null, approvalId: input?.approvalId ?? null }));
+          return send(200, await engine.mergeTeam(teamId, { apply: true, branchName: input?.branchName ?? null, integrationCheck: input?.integrationCheck ?? null, candidateId: input?.candidateId ?? null, approvalId: input?.approvalId ?? null, ...(input?.allowPartial !== undefined ? { allowPartial: input.allowPartial } : {}) }));
         }
         if (parts[3] === 'criteria') {
           if (req.method === 'GET' && parts.length === 4) return send(200, engine.getLatestCriteria(teamId));
@@ -487,9 +487,10 @@ export function createDshEngineRouter({
     } catch (error) {
       engine.recordRefusal?.('http', req.url || '', error.message || String(error), { method: req.method, code: error.code ?? null });
       if (!res.headersSent) {
-        send(400, {
+        send(Number.isInteger(error.status) ? error.status : 400, {
           error: error.message || String(error),
           ...(error.code ? { code: error.code } : {}),
+          ...(error.details ? { details: error.details } : {}),
           ...(error.code === 'CONTEXT_BUDGET_EXCEEDED'
             ? Object.fromEntries(['budgetBytes', 'requiredBytes', 'overByBytes', 'budgetBreakdown'].map(key => [key, error[key]]))
             : {}),

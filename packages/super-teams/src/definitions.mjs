@@ -102,6 +102,7 @@ const primaryRawDefinitions = [
       repoPath: z.string().min(1).max(1000).optional(),
       branchName: z.string().min(1).max(100).optional(),
       targetRef: z.string().min(1).max(200).optional(),
+      allowPartial: z.boolean().optional(),
       integrationCheck: checkSchema.optional(),
       criteria: z.array(goalCriterionSchema).max(32).optional(),
       dispositions: z.array(unmappedDispositionSchema).max(32).optional(),

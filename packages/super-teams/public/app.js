@@ -1215,7 +1215,7 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
     const r = await api('/teams/' + encodeURIComponent(id) + '/merge-preview', 'POST', {});
     if (r.ok) {
       const filesCount = (r.changedFiles || []).length;
-      notice(`合并预览通过：已重放 ${(r.appliedTasks || []).length} 项任务，涉及 ${filesCount} 个文件，未改动活工作树。${r.unacceptedTaskCount ? `（尚有 ${r.unacceptedTaskCount} 项未验收任务未纳入）` : ''}${r.diffStat ? '\n' + r.diffStat : ''}`);
+      notice(`合并预览通过：已重放 ${(r.appliedTasks || []).length} 项任务，涉及 ${filesCount} 个文件，未改动活工作树。${r.unacceptedTaskCount ? `（尚有 ${r.unacceptedTaskCount} 项未验收任务未纳入，正式合并将被门禁阻止）` : ''}${r.diffStat ? '\n' + r.diffStat : ''}`);
     } else {
       const c = r.conflict;
       notice(`合并预览发现冲突：任务 ${c?.title || c?.taskId || '未知'}（快照 ${c?.snapshotId?.slice(0, 12) || '未知'}）：${c?.detail || '补丁无法自动应用'}`);

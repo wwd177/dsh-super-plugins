@@ -1059,7 +1059,46 @@ export class Engine extends EventEmitter {
     }
     return { orderedDeps: ordered, dependencyPatches };
   }
-  async mergeTeam(teamId, { apply = false, branchName = null, integrationCheck = null, candidateId = null, approvalId = null } = {}) {
+  _analyzeTeamDeliveryCompleteness(teamId) {
+    const rawTasks = this.store.teamTasks(teamId);
+    const acceptedTasks = rawTasks.filter(t => t.state === 'accepted');
+    const inFlightTasks = rawTasks
+      .filter(t => executing.has(t.state) || Boolean(t.executionUnresolved))
+      .map(t => ({
+        taskId: t.id,
+        title: t.title,
+        state: t.state,
+        executionUnresolved: Boolean(t.executionUnresolved),
+      }));
+    const unacceptedTasks = rawTasks
+      .filter(t => t.state !== 'accepted')
+      .map(t => ({
+        taskId: t.id,
+        title: t.title,
+        state: t.state,
+        blockReason: t.blockReason ?? null,
+        executionUnresolved: Boolean(t.executionUnresolved),
+        dependsOn: Array.isArray(t.dependsOn) ? [...t.dependsOn] : [],
+      }));
+    const acceptedIdSet = new Set(acceptedTasks.map(t => t.id));
+    const missingDownstreamTasks = unacceptedTasks.filter(t =>
+      t.dependsOn.some(depId => acceptedIdSet.has(depId)),
+    );
+    const deliveryBlockReason = inFlightTasks.length > 0
+      ? 'TEAM_EXECUTION_IN_FLIGHT'
+      : (unacceptedTasks.length > 0 ? 'INCOMPLETE_TEAM_DELIVERY' : null);
+    return {
+      totalTaskCount: rawTasks.length,
+      acceptedTasks,
+      inFlightTasks,
+      unacceptedTasks,
+      missingDownstreamTasks,
+      isPartial: unacceptedTasks.length > 0,
+      deliveryBlockReason,
+    };
+  }
+  async mergeTeam(teamId, { apply = false, branchName = null, integrationCheck = null, candidateId = null, approvalId = null, allowPartial = false } = {}) {
+    if (typeof allowPartial !== 'boolean') throw new Error('allowPartial must be a boolean');
     if (candidateId && apply === true) {
       return this.delivery.publishCandidateLocal(teamId, { candidateId, approvalId, branchName });
     }
@@ -1073,9 +1112,45 @@ export class Engine extends EventEmitter {
         throw new Error('integrationCheck must be a behavioral command_test or node_test');
       }
     }
-    const rawTasks = this.store.teamTasks(team.id);
-    const accepted = this._topoSortTasks(rawTasks.filter(t => t.state === 'accepted'));
-    const unaccepted = rawTasks.filter(t => t.state !== 'accepted').map(t => ({ taskId: t.id, title: t.title, state: t.state, executionUnresolved: Boolean(t.executionUnresolved) }));
+    const completeness = this._analyzeTeamDeliveryCompleteness(team.id);
+    if (apply === true) {
+      if (completeness.inFlightTasks.length > 0) {
+        throw Object.assign(
+          new Error(`Refusing merge_apply: ${completeness.inFlightTasks.length} team task(s) are still executing or unresolved (${completeness.inFlightTasks.slice(0, 4).map(t => `${t.title}[${t.state}]`).join(', ')})`),
+          {
+            code: 'TEAM_EXECUTION_IN_FLIGHT',
+            status: 409,
+            details: {
+              teamId: team.id,
+              totalTaskCount: completeness.totalTaskCount,
+              acceptedCount: completeness.acceptedTasks.length,
+              inFlightTasks: completeness.inFlightTasks,
+              unacceptedTasks: completeness.unacceptedTasks,
+              missingDownstreamTasks: completeness.missingDownstreamTasks,
+            },
+          },
+        );
+      }
+      if (completeness.unacceptedTasks.length > 0 && allowPartial !== true) {
+        throw Object.assign(
+          new Error(`Refusing merge_apply: ${completeness.unacceptedTasks.length} of ${completeness.totalTaskCount} team task(s) are not accepted (${completeness.unacceptedTasks.slice(0, 4).map(t => `${t.title}[${t.state}]`).join(', ')}). Complete and accept all required tasks before delivery, or pass allowPartial: true explicitly for an intentional partial branch.`),
+          {
+            code: 'INCOMPLETE_TEAM_DELIVERY',
+            status: 409,
+            details: {
+              teamId: team.id,
+              totalTaskCount: completeness.totalTaskCount,
+              acceptedCount: completeness.acceptedTasks.length,
+              unacceptedTaskCount: completeness.unacceptedTasks.length,
+              unacceptedTasks: completeness.unacceptedTasks,
+              missingDownstreamTasks: completeness.missingDownstreamTasks,
+            },
+          },
+        );
+      }
+    }
+    const accepted = this._topoSortTasks(completeness.acceptedTasks);
+    const unaccepted = completeness.unacceptedTasks;
     if (!accepted.length) throw new Error('No accepted git-worktree tasks are ready to merge');
     const evidenceDir = path.join(this.dataDir, 'merge-evidence', team.id);
     fs.mkdirSync(evidenceDir, { recursive: true });
@@ -1101,18 +1176,72 @@ export class Engine extends EventEmitter {
         mergedCommit: result.mergedCommit,
         baseCommit: result.baseCommit,
         taskIds: result.appliedTasks.map(t => t.taskId),
+        partial: completeness.isPartial,
         localBranchOnly: true,
       };
       this._saveTeam(freshTeam, 'team-merged');
     }
-    return { ...result, scope: 'local_branch_only', remoteMerged: false, unacceptedTaskCount: unaccepted.length, unacceptedTasks: unaccepted };
+    return {
+      ...result,
+      scope: 'local_branch_only',
+      remoteMerged: false,
+      isPartial: completeness.isPartial,
+      readyForDelivery: result.ok === true && !completeness.isPartial && completeness.inFlightTasks.length === 0,
+      deliveryBlockReason: completeness.deliveryBlockReason,
+      unacceptedTaskCount: unaccepted.length,
+      unacceptedTasks: unaccepted,
+      missingDownstreamTasks: completeness.missingDownstreamTasks,
+    };
   }
   // v0.18 共享交付候选、目标门禁、本地发布恢复、基线漂移与只读 PR 对账入口
   previewGoalCriteria(teamId, opts) { return this.delivery.previewGoalCriteria(teamId, opts); }
   freezeCriteria(teamId, opts) { return this.delivery.freezeCriteria(teamId, opts); }
   getLatestCriteria(teamId) { return this.delivery.getLatestCriteria(teamId); }
   recordCriterionSignoff(teamId, opts) { return this.delivery.recordCriterionSignoff(teamId, opts); }
-  createCandidate(teamId, opts) { return this.delivery.createCandidate(teamId, opts); }
+  async createCandidate(teamId, opts = {}) {
+    if (opts?.allowPartial !== undefined && typeof opts.allowPartial !== 'boolean') {
+      throw new Error('allowPartial must be a boolean');
+    }
+    const explicitSelection = Array.isArray(opts?.taskIds) && opts.taskIds.length > 0;
+    if (!explicitSelection) {
+      const completeness = this._analyzeTeamDeliveryCompleteness(teamId);
+      if (completeness.inFlightTasks.length > 0) {
+        throw Object.assign(
+          new Error(`Refusing candidate creation: ${completeness.inFlightTasks.length} team task(s) are still executing or unresolved (${completeness.inFlightTasks.slice(0, 4).map(t => `${t.title}[${t.state}]`).join(', ')})`),
+          {
+            code: 'TEAM_EXECUTION_IN_FLIGHT',
+            status: 409,
+            details: {
+              teamId,
+              totalTaskCount: completeness.totalTaskCount,
+              acceptedCount: completeness.acceptedTasks.length,
+              inFlightTasks: completeness.inFlightTasks,
+              unacceptedTasks: completeness.unacceptedTasks,
+              missingDownstreamTasks: completeness.missingDownstreamTasks,
+            },
+          },
+        );
+      }
+      if (completeness.unacceptedTasks.length > 0 && opts?.allowPartial !== true) {
+        throw Object.assign(
+          new Error(`Refusing candidate creation: ${completeness.unacceptedTasks.length} of ${completeness.totalTaskCount} team task(s) are not accepted (${completeness.unacceptedTasks.slice(0, 4).map(t => `${t.title}[${t.state}]`).join(', ')}). Pass explicit taskIds or allowPartial: true to freeze an intentional partial candidate.`),
+          {
+            code: 'INCOMPLETE_TEAM_DELIVERY',
+            status: 409,
+            details: {
+              teamId,
+              totalTaskCount: completeness.totalTaskCount,
+              acceptedCount: completeness.acceptedTasks.length,
+              unacceptedTaskCount: completeness.unacceptedTasks.length,
+              unacceptedTasks: completeness.unacceptedTasks,
+              missingDownstreamTasks: completeness.missingDownstreamTasks,
+            },
+          },
+        );
+      }
+    }
+    return this.delivery.createCandidate(teamId, opts);
+  }
   getCandidate(teamId, candidateId) { return this.delivery.getCandidate(teamId, candidateId); }
   listCandidates(teamId) { return this.delivery.listCandidates(teamId); }
   approveCandidate(teamId, opts) { return this.delivery.approveCandidate(teamId, opts); }
