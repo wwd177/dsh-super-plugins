@@ -27,6 +27,7 @@ const clone = value => structuredClone(value);
 const cleanSessionId = value => (typeof value === 'string' && value.trim() ? value.trim() : null);
 const errorText = value => typeof value === 'string' ? value : value instanceof Error ? value.message : JSON.stringify(value);
 const executing = new Set(['dispatching', 'running', 'pausing', 'cancelling']);
+const MAX_AUTO_RECOVERY_TRIES = 12;
 const teamPreserved = new Set(['accepted', 'checked', 'submitted', 'failed', 'cancelled', 'abandoned']);
 const memberStatePriority = ['unknown', 'paused-unconfirmed', 'cancelled-unconfirmed', 'failed', 'running', 'dispatching', 'pausing', 'cancelling', 'submitted', 'checked', 'blocked', 'queued', 'paused', 'cancelled', 'accepted'];
 const countsOf = tasks => tasks.reduce((counts, task) => { counts[task.state] = (counts[task.state] ?? 0) + 1; return counts; }, {});
@@ -625,13 +626,20 @@ export class Engine extends EventEmitter {
   status(unresolved = this.unresolvedTasks()) {
     this._ready();
     const pending = unresolved.filter(task => task.executionUnresolved && !executing.has(task.state));
-    const eligible = pending.filter(task => task.threadId && (task.turnId || task.executionKind === 'native' && task.nativeMarker));
+    const isStopped = task =>
+      Boolean(task.attemptId && task.recoveryTerminal?.attemptId === task.attemptId) ||
+      Boolean(task.attemptId && task.recovery?.attemptId === task.attemptId && (task.recovery.exhausted === true || (task.recovery.tries ?? 0) >= MAX_AUTO_RECOVERY_TRIES));
+    const hasIdentity = task => Boolean(task.threadId && (task.turnId || (task.executionKind === 'native' && task.nativeMarker)));
+    const uninspectable = pending.filter(task => !hasIdentity(task));
+    const exhausted = pending.filter(task => hasIdentity(task) && isStopped(task));
+    const eligible = pending.filter(task => hasIdentity(task) && !isStopped(task));
     const errors = pending.filter(task => task.recovery?.error).sort((a, b) => b.recovery.at.localeCompare(a.recovery.at));
     return {
       maxConcurrent: this.maxConcurrent,
       activeSlots: unresolved.length,
       pendingReconciliations: pending.length,
-      uninspectableReconciliations: pending.length - eligible.length,
+      uninspectableReconciliations: uninspectable.length,
+      exhaustedReconciliations: exhausted.length,
       recovering: this.recoveryInFlight.size,
       nextRecoveryAt: eligible.length ? new Date(Math.min(...eligible.map(task => task.recovery?.nextAt ?? Date.now()))).toISOString() : null,
       lastRecoveryError: errors[0]?.recovery.error ?? null,
@@ -883,14 +891,29 @@ export class Engine extends EventEmitter {
         const latestEffectiveSid = task ? (cleanSessionId(task.sessionId) ?? cleanSessionId(latestTeam?.sessionId)) : null;
         const teamBindingIntact = !task?.teamId || (latestTeam && latestTeam.revision === preparationTeamRevision && latestEffectiveSid === effectiveSessionId);
         let sessionStillReady = true;
+        let sessionErr = null;
         if (teamBindingIntact && typeof this.adapter.preflightSession === 'function') {
-          try { this.adapter.preflightSession(effectiveSessionId); } catch { sessionStillReady = false; }
+          try { this.adapter.preflightSession(effectiveSessionId); }
+          catch (err) { sessionStillReady = false; sessionErr = err; }
         }
         if (this.closed || !task || task.revision !== preparationRevision || !teamBindingIntact || !sessionStillReady || !this._mayRun(task) || !['queued', 'blocked'].includes(task.state)) {
           if (budgetReservation?.enforced) this.budgetGuard.releaseAttempt(task?.teamId ?? candidate.teamId, attemptId);
+          if (!this.closed && !sessionStillReady && task && task.revision === preparationRevision && teamBindingIntact && !task.executionUnresolved && this._mayRun(task) && ['queued', 'blocked'].includes(task.state)) {
+            const blockReason = sessionErr?.blockReason ?? 'session-unavailable';
+            const blockCode = sessionErr?.code ?? 'SESSION_UNAVAILABLE';
+            const errMsg = sessionErr?.message ?? 'Session unavailable';
+            if (task.state !== 'blocked' || task.blockReason !== blockReason || task.error !== errMsg || task.blockCode !== blockCode) {
+              task.state = 'blocked';
+              task.blockReason = blockReason;
+              task.blockCode = blockCode;
+              task.error = errMsg;
+              task.runtimeError = null;
+              this._save(task, 'session-blocked');
+            }
+          }
           continue;
         }
-        Object.assign(task, { state: 'dispatching', attemptId, cwd, ...(isWorktree ? { workspaceMode: 'git-worktree', attemptStartCommit, appliedGitDependencies, engineMaterializedDirs } : {}), dispatchedSessionId: effectiveSessionId, expectedTeamRevision: preparationTeamRevision, threadId: null, turnId: null, ...selection, dependencyVersions: dependencyContext.versions, dependencyManifest, contextManifest, packetBytes: packet.bytes, packetRequiredBytes: packet.requiredBytes, budgetBreakdown: packet.budgetBreakdown, budgetDetails: null, error: null, runtimeError: null, executionUnresolved: true, verification: null, summary: null, resultFile: null, resultSha256: null, completionStatus: null, recovery: null, nextRetryAt: null, startedAt: now(), finishedAt: null, durationMs: null });
+        Object.assign(task, { state: 'dispatching', attemptId, cwd, ...(isWorktree ? { workspaceMode: 'git-worktree', attemptStartCommit, appliedGitDependencies, engineMaterializedDirs } : {}), dispatchedSessionId: effectiveSessionId, expectedTeamRevision: preparationTeamRevision, threadId: null, turnId: null, ...selection, dependencyVersions: dependencyContext.versions, dependencyManifest, contextManifest, packetBytes: packet.bytes, packetRequiredBytes: packet.requiredBytes, budgetBreakdown: packet.budgetBreakdown, budgetDetails: null, error: null, runtimeError: null, executionUnresolved: true, verification: null, summary: null, resultFile: null, resultSha256: null, completionStatus: null, recovery: null, recoveryTerminal: null, nextRetryAt: null, startedAt: now(), finishedAt: null, durationMs: null });
         if (native) Object.assign(task, { executionKind: 'native', nativeBindingId: native.binding.id, nativeBindingRevision: native.binding.revision,
           nativeThreadId: native.binding.threadId, nativeHostId: native.binding.hostId ?? 'local', nativeOriginThreadId: native.binding.originThreadId,
           nativeMarker: `[SUPERAGENT_NATIVE_TASK:${task.id}:${attemptId}]`, nativeAfterCursor: native.snapshot.cursor ?? null,
@@ -911,14 +934,19 @@ export class Engine extends EventEmitter {
         if (this.closed || this.store.get(task.id)?.revision !== preparationRevision) continue;
         task = this.store.get(task.id);
         const isBudgetBlock = String(error.code || '').startsWith('BUDGET_');
-        const nextBlockReason = isBudgetBlock ? 'budget' : 'preflight';
-        if (task.state !== 'blocked' || task.error !== error.message || task.blockReason !== nextBlockReason) {
+        const isSessionBlock = error.code === 'SESSION_UNAVAILABLE';
+        const nextBlockReason = isBudgetBlock ? 'budget' : isSessionBlock ? (error.blockReason ?? 'session-unavailable') : 'preflight';
+        const nextBlockCode = isSessionBlock ? 'SESSION_UNAVAILABLE' : null;
+        const blockEventType = isBudgetBlock ? 'budget-blocked' : isSessionBlock ? 'session-blocked' : 'preflight-blocked';
+        if (task.state !== 'blocked' || task.error !== error.message || task.blockReason !== nextBlockReason || (task.blockCode ?? null) !== nextBlockCode) {
           task.state = 'blocked'; task.blockReason = nextBlockReason; task.error = error.message;
+          if (nextBlockCode) task.blockCode = nextBlockCode;
+          else delete task.blockCode;
           task.budgetDetails = error.code === 'CONTEXT_BUDGET_EXCEEDED' ? Object.fromEntries(['code', 'budgetBytes', 'requiredBytes', 'overByBytes', 'budgetBreakdown'].map(key => [key, error[key]])) : null;
           if (error.code === 'WORKTREE_DEPENDENCY_CONFLICT') {
             task.conflictDependencyVersions = task.dependsOn.map(id => ({ id, snapshotId: this.store.get(id)?.acceptance?.snapshotId ?? null }));
           }
-          this._save(task, isBudgetBlock ? 'budget-blocked' : 'preflight-blocked');
+          this._save(task, blockEventType);
         }
       } finally {
         if (preparedWorkspace && !preserveWorkspace && fs.existsSync(preparedWorkspace.cwd)) {
@@ -1640,6 +1668,46 @@ export class Engine extends EventEmitter {
     task.state = 'abandoned'; task.control = 'cancel'; delete task.teamPauseOrigin;
     const value = this._save(task, 'abandoned', { executionUnresolved: task.executionUnresolved, abandonment: clone(task.abandonment) }); this.runDue().catch(() => {}); return value;
   }
+  resolveUnresolved(id, options = {}) {
+    if (!options || typeof options !== 'object' || Array.isArray(options)) throw new Error('Resolve-unresolved options must be an object');
+    const { expectedRevision, expectedAttemptId } = options;
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw new Error('expectedRevision is required and must be a non-negative safe integer');
+    if (expectedAttemptId !== undefined && (typeof expectedAttemptId !== 'string' || !expectedAttemptId.trim() || expectedAttemptId.length > 120)) {
+      throw new Error('expectedAttemptId must be a non-empty string up to 120 characters');
+    }
+    for (const [key, limit] of [['reason', 2000], ['evidence', 4000]]) if (typeof options[key] !== 'string' || !options[key].trim() || options[key].length > limit) throw new Error(`Resolve-unresolved ${key} must be non-empty and at most ${limit} characters`);
+    if (options.actor !== undefined && (typeof options.actor !== 'string' || !options.actor.trim() || options.actor.length > 200)) throw new Error('Resolve-unresolved actor must be non-empty and at most 200 characters');
+    const task = this._task(id);
+    if (expectedRevision !== task.revision) throw new Error('Task revision changed; refresh before resolving unresolved execution');
+    if (expectedAttemptId !== undefined && expectedAttemptId !== task.attemptId) throw new Error('Task attempt changed; refresh before resolving unresolved execution');
+    if (task.state !== 'abandoned' || task.executionUnresolved !== true) throw new Error('Resolve-unresolved requires an abandoned task with unresolved execution');
+    if (this.handles.has(task.id)) throw new Error('Task still has an active in-process execution handle; cannot release unresolved slot');
+    const key = `${task.id}:${task.attemptId}`;
+    if (this.recoveryInFlight.has(key) || this.finishing.has(key)) throw new Error('Reconciliation or completion is currently in flight; retry after it settles');
+    task.unresolvedResolution = {
+      at: now(),
+      actor: options.actor?.trim() ?? 'unknown',
+      actorAssurance: 'caller-reported',
+      reason: options.reason.trim(),
+      evidence: options.evidence.trim(),
+      observedRevision: task.revision,
+      versionPinned: true,
+      stopCertified: false,
+      priorState: task.state,
+      priorCompletionStatus: task.completionStatus ?? null,
+      priorAttemptId: task.attemptId ?? null,
+      priorThreadId: task.threadId ?? null,
+      priorTurnId: task.turnId ?? null,
+    };
+    task.executionUnresolved = false;
+    const value = this._save(task, 'unresolved-resolved', {
+      executionUnresolved: false,
+      stopCertified: false,
+      unresolvedResolution: clone(task.unresolvedResolution),
+    });
+    this.runDue().catch(() => {});
+    return value;
+  }
   _inheritTeamControl(task) {
     if (task.state === 'abandoned') return;
     if (!task.teamId) return;
@@ -1805,7 +1873,10 @@ export class Engine extends EventEmitter {
     if (this.closed) return;
     for (const task of this.store.unresolvedTasks()) {
       if (this.recoveryInFlight.size >= 2) break;
-      if (!task.executionUnresolved || executing.has(task.state) || !task.threadId || (!task.turnId && task.executionKind !== 'native') || (task.recovery?.nextAt ?? 0) > Date.now()) continue;
+      if (!task.executionUnresolved || executing.has(task.state) || !task.threadId || (!task.turnId && task.executionKind !== 'native')) continue;
+      if (task.attemptId && task.recoveryTerminal?.attemptId === task.attemptId) continue;
+      if (task.attemptId && task.recovery?.attemptId === task.attemptId && (task.recovery.exhausted === true || (task.recovery.tries ?? 0) >= MAX_AUTO_RECOVERY_TRIES)) continue;
+      if ((task.recovery?.nextAt ?? 0) > Date.now()) continue;
       const key = `${task.id}:${task.attemptId}`;
       if (!this.recoveryInFlight.has(key)) this.reconcile(task.id).catch(() => {});
     }
@@ -1818,38 +1889,75 @@ export class Engine extends EventEmitter {
     // Install the promise before starting any adapter work so explicit and
     // background inspections cannot overlap for one persisted attempt.
     const inspection = Promise.resolve().then(() => this._inspectAttempt(task));
-    const tracked = inspection.then(value => { this._recordRecovery(task, null); return value; }, error => { this._recordRecovery(task, error); throw error; }).finally(() => { this.recoveryInFlight.delete(key); });
+    const tracked = inspection.then(
+      value => {
+        this._recordRecovery(task, null);
+        return !this.closed && this.store?.get(task.id) ? this.get(task.id) : value;
+      },
+      error => {
+        this._recordRecovery(task, error);
+        throw error;
+      },
+    ).finally(() => { this.recoveryInFlight.delete(key); });
     this.recoveryInFlight.set(key, tracked);
     return tracked;
   }
   _recordRecovery(task, error) {
     if (this.closed || !this.store) return;
     const current = this.store.get(task.id);
-    if (current?.attemptId !== task.attemptId || !current.executionUnresolved) return;
-    const tries = (current.recovery?.tries ?? 0) + 1;
-    const delayMs = Math.min(60000, 1000 * 2 ** Math.min(tries - 1, 6));
-    current.recovery = { attemptId: task.attemptId, tries, at: now(), nextAt: Date.now() + delayMs, error: error ? bounded(errorText(error), 1024).text : null };
-    this._save(current, 'recovery-deferred', { delayMs, readOnly: true });
+    if (!current || current.attemptId !== task.attemptId || !current.executionUnresolved) return;
+    const prevTries = current.recovery?.attemptId === task.attemptId ? (current.recovery.tries ?? 0) : 0;
+    const tries = prevTries + 1;
+    const terminalStop = Boolean(task.attemptId && current.recoveryTerminal?.attemptId === task.attemptId);
+    const exhausted = terminalStop || tries >= MAX_AUTO_RECOVERY_TRIES;
+    const delayMs = exhausted ? null : Math.min(60000, 1000 * 2 ** Math.min(tries - 1, 6));
+    current.recovery = {
+      attemptId: task.attemptId,
+      tries,
+      at: now(),
+      nextAt: exhausted ? null : Date.now() + delayMs,
+      exhausted,
+      error: error ? bounded(errorText(error), 1024).text : null,
+    };
+    this._save(current, exhausted ? 'recovery-exhausted' : 'recovery-deferred', {
+      ...(delayMs !== null ? { delayMs } : {}),
+      exhausted,
+      terminalReason: terminalStop ? current.recoveryTerminal.reason : null,
+      readOnly: true,
+    });
   }
   async _inspectAttempt(task) {
     const snapshot = task.executionKind === 'native'
       ? await this.nativeAdapter.inspectAttempt(task)
       : await this.adapter.inspect(task.threadId, { turnId: task.turnId, attemptId: task.attemptId });
-    const current = this._task(task.id);
-    if (current.attemptId !== task.attemptId || !current.executionUnresolved) return current;
+    if (this.closed || !this.store) return null;
+    const current = this.store.get(task.id);
+    if (!current || current.attemptId !== task.attemptId || !current.executionUnresolved) return current ?? null;
     if (current.executionKind === 'native' && snapshot.turnId && !current.turnId) {
       current.turnId = snapshot.turnId;
       this._save(current, 'host-identity-recovered');
     }
     current.reconciliation = { at: now(), evidence: bounded(JSON.stringify(snapshot), 8192), stopCertified: false };
     this._save(current, 'runtime-inspected');
-    // A matching completed turn can recover a lost final response. A generic
-    // thread status or interrupted turn cannot certify an unresolved attempt.
+    // A matching completed turn can recover a lost final response. An exact
+    // interrupted turn halts pointless automatic polling without certifying stop.
     const turn = snapshot?.id === current.threadId && current.turnId
       ? snapshot.turns?.find(item => item.id === current.turnId) : null;
     if (turn && ['completed', 'failed'].includes(turn.status)) {
       const text = (turn.items ?? []).filter(item => item.type === 'agentMessage').map(item => item.text ?? '').join('\n\n');
       await this._finish(current, { status: turn.status, text, error: turn.error });
+    } else if (turn && turn.status === 'interrupted') {
+      const fresh = this.store.get(task.id);
+      if (fresh && fresh.attemptId === task.attemptId && fresh.executionUnresolved) {
+        fresh.recoveryTerminal = {
+          attemptId: fresh.attemptId,
+          reason: 'host-turn-interrupted',
+          turnId: turn.id,
+          at: now(),
+          stopCertified: false,
+        };
+        this._save(fresh, 'recovery-terminal-unresolved', { turnId: turn.id, stopCertified: false });
+      }
     }
     return this.get(task.id);
   }

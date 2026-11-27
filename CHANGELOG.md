@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.20.0-dsh.1 (SuperAgent `1.25.0-dsh.1` / Super Teams `0.17.0-dsh.1` / Shared Core `0.19.1` / Installer Skill `1.4.0`)
+
+Hardens installer lock coordination, control-plane session semantics, bounded auto-recovery loops, and manual slot resolution across both hosts (real host regressions verified on Windows; POSIX installer/process-birth logic implemented and script-ready pending live macOS/Linux execution):
+
+- **SQLite Lock Guard, Live-PID Safety & Profile-Only Purge (`scripts/install.mjs`)**:
+  - Coordinates installs/uninstalls per canonical physical `dshHome` via `.dsh-super-plugins.lock-guard.sqlite` (`PRAGMA busy_timeout = 1500; BEGIN EXCLUSIVE`) with precomputed cross-platform `getProcessBirth(pid)` (Win32 ticks, Linux `/proc/<pid>/stat` field 22, macOS `ps -o lstart=`), eliminating the unsafe `ageMs > 60000` live-PID eviction and treating unverifiable live birth fail-closed as alive (`DSH_LOCK_WAIT_MS` default `30000`, unlock nonce checked inside the guard DB).
+  - Replaces synchronous blocking CLI execution with async `runDshCli` (`DSH_CLI_TIMEOUT_MS` default `120000`) and full process-tree cleanup (`taskkill /T /F` / `-pid` `SIGKILL`), rolls back fresh `stageRoot` on initial install failure when no sibling profile references exist, and scopes `--uninstall --purge-data` strictly to the target profile directory while preserving legacy `<dshHome>/plugin-data/dsh-super-teams`.
+- **Control-Plane Session Affinity & Error Preservation (`dsh-http.mjs`, `engine.mjs`)**:
+  - Enforces online session preflight (`onlyIfUnbound: true, verifyOnline: true`) on `POST /api/teams/:id/control` specifically when `action === 'resume'` with `sessionId` (propagating errors cleanly), while keeping `pause`/`cancel` offline-safe.
+  - Fixes `_pump()` secondary `preflightSession` failure & catch handling so offline sessions record `blockReason: 'session-unavailable'` and `blockCode: 'SESSION_UNAVAILABLE'`.
+- **Bounded Auto-Recovery & `expectedAttemptId`-Pinned Manual Release (`engine.mjs`, `dsh-http.mjs`, `overview.mjs`, `definitions.mjs`, `runtime.mjs`, `recovery-guidance.mjs`)**:
+  - Adds `MAX_AUTO_RECOVERY_TRIES = 12` persisted per `attemptId` across restarts, sets `recoveryTerminal` (`stopCertified: false`) immediately on matched `turn.status === 'interrupted'`, halts background polling, guards post-`await` writes against close/attempt swaps, exposes `status().exhaustedReconciliations` while excluding stopped tasks from `nextRecoveryAt`, and surfaces conditional `manualRelease` guidance.
+  - Adds `resolve_unresolved` + optional `expectedAttemptId` to `engine_control` (preserving the exact 8-tool contract), `POST /api/tasks/:id/resolve-unresolved`, and `overview.mjs` (`unresolvedResolution`, pruned first under tight byte budgets).
+- **Live External-Repo Blind Benchmark (`docs/benchmarks/live-benchmark-v0.20.0.md`)**:
+  - Documents real-model external-repo blind screening methodology and observed Windows results (preserving honest sample boundaries).
+
 ## v0.19.1-dsh.1 (SuperAgent `1.24.1-dsh.1` / Super Teams `0.16.1-dsh.1` / Shared Core `0.19.1` / Installer Skill `1.3.1`)
 
 Addresses multi-profile installation safety, strict multi-chat dispatch affinity, graph-exact critical path scheduling, Windows `MAX_PATH` isolation hardening, and 100% release manifest consistency across both hosts:

@@ -3,18 +3,23 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
 
+const ENGINE_VERSION = '0.20.0-dsh.1';
+const SUPERAGENT_VERSION = '1.25.0-dsh.1';
+const SUPER_TEAMS_VERSION = '0.17.0-dsh.1';
+
 const PLUGIN_NAMES = ['@local/dsh-superagent-menu', '@local/dsh-super-teams'];
 const SKILL_ENTRIES = [
-  { name: 'superagent-workflow', package: 'superagent', version: '1.24.1-dsh.1' },
-  { name: 'workflow-quality', package: 'superagent', version: '1.24.1-dsh.1' },
-  { name: 'development-handoff', package: 'superagent', version: '1.24.1-dsh.1' },
-  { name: 'super-teams', package: 'super-teams', version: '0.16.1-dsh.1' },
+  { name: 'superagent-workflow', package: 'superagent', version: SUPERAGENT_VERSION },
+  { name: 'workflow-quality', package: 'superagent', version: SUPERAGENT_VERSION },
+  { name: 'development-handoff', package: 'superagent', version: SUPERAGENT_VERSION },
+  { name: 'super-teams', package: 'super-teams', version: SUPER_TEAMS_VERSION },
 ];
 
 function parseArgs(argv) {
@@ -54,7 +59,7 @@ function parseArgs(argv) {
         '  --dsh-home <dir>       DeepSeek Harness home directory (default: ~/.dsh or $DSH_HOME)',
         '  --dsh-cli <file>       Explicit path to dsh / dsh.cmd CLI binary',
         '  --dsh-install-dir <d>  DeepSeek Harness app installation directory',
-        '  --purge-data           With --uninstall, also delete plugin-data/dsh-super-teams',
+        '  --purge-data           With --uninstall, delete ONLY profiles/<profile>/plugin-data/dsh-super-teams (never sibling profiles or legacy root plugin-data)',
         '  --json                 Emit machine-readable JSON output (ideal for AI agents)',
       ].join('\n'));
       process.exit(0);
@@ -193,12 +198,36 @@ function collectRelativeFiles(rootDir, current = rootDir, out = []) {
   return out;
 }
 
-function runDshCli(dshCli, args, dshHome = null) {
+function killCliProcessTree(child) {
+  const pid = child?.pid;
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  try {
+    if (process.platform === 'win32') {
+      spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore',
+        timeout: 8000,
+      });
+    } else {
+      try { process.kill(-pid, 'SIGKILL'); } catch {}
+      try { process.kill(pid, 'SIGKILL'); } catch {}
+    }
+  } catch {
+    try { child.kill('SIGKILL'); } catch {}
+  }
+}
+
+async function runDshCli(dshCli, args, dshHome = null) {
   const cleanEnv = { ...process.env };
   delete cleanEnv.ELECTRON_RUN_AS_NODE;
   if (dshHome) cleanEnv.DSH_HOME = dshHome;
 
-  let res;
+  const parsedTimeout = Number(process.env.DSH_CLI_TIMEOUT_MS);
+  const timeoutMs = Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? Math.max(50, parsedTimeout) : 120000;
+
+  let cmd;
+  let spawnArgs;
+  let spawnOpts;
   if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(dshCli)) {
     // Pass executable and arguments via environment variables so cmd.exe performs single-pass
     // expansion without re-expanding literal %VAR% tokens or breaking on spaces/metacharacters.
@@ -209,25 +238,80 @@ function runDshCli(dshCli, args, dshHome = null) {
       return `"%${key}%"`;
     });
     const cmdLine = `"%DSH_CLI_BIN%" ${argRefs.join(' ')}`.trim();
-    res = spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `"${cmdLine}"`], {
+    cmd = process.env.ComSpec || 'cmd.exe';
+    spawnArgs = ['/d', '/s', '/c', `"${cmdLine}"`];
+    spawnOpts = {
       env: cleanEnv,
-      encoding: 'utf8',
       windowsHide: true,
       windowsVerbatimArguments: true,
-    });
+      stdio: ['ignore', 'pipe', 'pipe'],
+    };
   } else {
-    res = spawnSync(dshCli, args, {
+    cmd = dshCli;
+    spawnArgs = args;
+    spawnOpts = {
       env: cleanEnv,
-      encoding: 'utf8',
       windowsHide: true,
+      detached: process.platform !== 'win32',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    };
+  }
+
+  return await new Promise((resolve, reject) => {
+    const child = spawn(cmd, spawnArgs, spawnOpts);
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let spawnErr = null;
+    let settled = false;
+    let exitWaitTimer = null;
+
+    child.stdout?.on('data', chunk => {
+      if (stdout.length < 1024 * 1024) stdout += chunk.toString('utf8');
     });
-  }
-  if (res.status !== 0) {
-    throw new Error(
-      `dsh CLI exited with status ${res.status}:\n${(res.stdout || '') + '\n' + (res.stderr || '')}`.trim()
-    );
-  }
-  return res;
+    child.stderr?.on('data', chunk => {
+      if (stderr.length < 1024 * 1024) stderr += chunk.toString('utf8');
+    });
+
+    const finalize = code => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (exitWaitTimer) clearTimeout(exitWaitTimer);
+      if (timedOut) {
+        reject(new Error(`dsh CLI timed out after ${timeoutMs}ms and process tree was terminated:\n${(stdout + '\n' + stderr).trim()}`.trim()));
+        return;
+      }
+      if (spawnErr) {
+        reject(new Error(`dsh CLI failed to start: ${spawnErr.message}`));
+        return;
+      }
+      if (code !== 0) {
+        reject(new Error(`dsh CLI exited with status ${code}:\n${(stdout + '\n' + stderr).trim()}`.trim()));
+        return;
+      }
+      resolve({ status: 0, stdout, stderr });
+    };
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killCliProcessTree(child);
+      try { child.stdout?.destroy(); } catch {}
+      try { child.stderr?.destroy(); } catch {}
+      // Await full child termination before resolving/rejecting so caller lock release never races live CLI I/O.
+      exitWaitTimer = setTimeout(() => finalize(null), 3000);
+      exitWaitTimer.unref?.();
+    }, timeoutMs);
+    timer.unref?.();
+
+    child.on('error', err => {
+      spawnErr = err;
+      if (child.exitCode !== null || child.pid === undefined) finalize(null);
+    });
+    child.on('close', code => {
+      finalize(code);
+    });
+  });
 }
 
 function snapshotProtectedFiles(dshHome) {
@@ -333,79 +417,173 @@ function isPidAlive(pid) {
   }
 }
 
-const SLEEP_BUFFER = new Int32Array(new SharedArrayBuffer(4));
-function sleepSyncMs(ms) {
-  Atomics.wait(SLEEP_BUFFER, 0, 0, Math.max(1, ms));
+let ownProcessBirth = null;
+function getProcessBirth(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (pid === process.pid && ownProcessBirth) return ownProcessBirth;
+  let birth = null;
+  try {
+    if (process.platform === 'win32') {
+      const ps = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+      const res = spawnSync(
+        ps,
+        ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `[System.Diagnostics.Process]::GetProcessById(${pid}).StartTime.ToUniversalTime().Ticks`],
+        { encoding: 'utf8', windowsHide: true, timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }
+      );
+      if (res.status === 0) {
+        const txt = String(res.stdout || '').trim();
+        if (/^\d+$/.test(txt)) birth = txt;
+      }
+    } else if (process.platform === 'linux') {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const rparen = stat.lastIndexOf(')');
+      if (rparen >= 0) {
+        const fields = stat.slice(rparen + 2).trim().split(/\s+/);
+        if (fields[19] && /^\d+$/.test(fields[19])) birth = fields[19];
+      }
+    } else if (process.platform === 'darwin') {
+      const res = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], {
+        encoding: 'utf8',
+        timeout: 5000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      if (res.status === 0) {
+        const txt = String(res.stdout || '').trim();
+        if (txt) birth = txt;
+      }
+    }
+  } catch {
+    birth = null;
+  }
+  if (pid === process.pid && birth) ownProcessBirth = birth;
+  return birth;
 }
 
-function withDshHomeLock(dshHome, { createHome = false, mode, profile }, fn) {
+function withGuardDb(guardPath, fn) {
+  const guard = new DatabaseSync(guardPath);
+  try {
+    guard.exec('PRAGMA busy_timeout=1500; BEGIN EXCLUSIVE');
+    try {
+      const value = fn();
+      guard.exec('COMMIT');
+      return value;
+    } catch (err) {
+      try { guard.exec('ROLLBACK'); } catch {}
+      throw err;
+    }
+  } finally {
+    guard.close();
+  }
+}
+
+async function withDshHomeLock(dshHome, { createHome = false, mode, profile }, fn) {
   if (createHome) {
     fs.mkdirSync(dshHome, { recursive: true });
   } else if (!fs.existsSync(dshHome)) {
-    return fn(dshHome);
+    return await fn(dshHome);
   }
   const dshHomeReal = fs.realpathSync(dshHome);
   const lockPath = path.join(dshHomeReal, '.dsh-super-plugins.lock');
+  const guardPath = path.join(dshHomeReal, '.dsh-super-plugins.lock-guard.sqlite');
   const nonce = crypto.randomUUID();
   const payload = JSON.stringify({
     pid: process.pid,
+    birth: getProcessBirth(process.pid),
     nonce,
     mode,
     profile,
     startedAt: new Date().toISOString(),
   }) + '\n';
-  const deadline = Date.now() + 25000;
+  const waitLimit = Number(process.env.DSH_LOCK_WAIT_MS);
+  const waitMs = Number.isFinite(waitLimit) && waitLimit > 0 ? waitLimit : 30000;
+  const deadline = Date.now() + waitMs;
   let acquired = false;
+  let lastHolderSummary = '';
 
   while (Date.now() < deadline) {
+    let outcome = 'busy';
     try {
-      const fd = fs.openSync(lockPath, 'wx');
-      try {
-        fs.writeFileSync(fd, payload, 'utf8');
-      } finally {
-        fs.closeSync(fd);
-      }
+      outcome = withGuardDb(guardPath, () => {
+        let st = null;
+        try {
+          st = fs.lstatSync(lockPath);
+        } catch (err) {
+          if (err.code !== 'ENOENT') throw err;
+        }
+        if (st) {
+          if (st.isSymbolicLink()) {
+            throw new Error(`Refusing unsafe lock symlink at ${lockPath}`);
+          }
+          const raw = fs.readFileSync(lockPath, 'utf8');
+          let info = null;
+          if (raw.trim()) {
+            try {
+              const parsed = JSON.parse(raw);
+              if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) info = parsed;
+            } catch {
+              info = null;
+            }
+          }
+
+          let isStale = false;
+          if (info && Number.isInteger(info.pid) && info.pid > 0) {
+            if (!isPidAlive(info.pid)) {
+              isStale = true;
+            } else if (info.birth) {
+              const curBirth = getProcessBirth(info.pid);
+              if (curBirth !== null && curBirth !== String(info.birth)) {
+                isStale = true;
+              }
+            }
+            // Live PIDs (and live PIDs whose birth cannot be verified) are NEVER evicted by age.
+          } else if (Date.now() - st.mtimeMs > 3000) {
+            isStale = true;
+          }
+
+          if (!isStale) {
+            lastHolderSummary = info
+              ? `pid=${info.pid}, mode=${info.mode ?? 'unknown'}, profile=${info.profile ?? 'unknown'}`
+              : 'unparsed lock file';
+            return 'busy';
+          }
+          fs.unlinkSync(lockPath);
+        }
+
+        const fd = fs.openSync(lockPath, 'wx');
+        try {
+          fs.writeFileSync(fd, payload, 'utf8');
+          fs.fsyncSync(fd);
+        } finally {
+          fs.closeSync(fd);
+        }
+        return 'acquired';
+      });
+    } catch (err) {
+      if (/Refusing unsafe lock symlink/.test(err.message)) throw err;
+      if (/locked|busy/i.test(err.message)) outcome = 'busy';
+      else throw err;
+    }
+    if (outcome === 'acquired') {
       acquired = true;
       break;
-    } catch (err) {
-      if (err.code !== 'EEXIST') throw err;
-      try {
-        const st = fs.lstatSync(lockPath);
-        if (st.isSymbolicLink()) {
-          throw new Error(`Refusing unsafe lock symlink at ${lockPath}`);
-        }
-        const raw = fs.readFileSync(lockPath, 'utf8');
-        let info = null;
-        if (raw.trim()) {
-          try { info = JSON.parse(raw); } catch { info = null; }
-        }
-        const ageMs = Date.now() - st.mtimeMs;
-        const deadOwner = info && Number.isInteger(info.pid) && !isPidAlive(info.pid);
-        const stale = deadOwner || ageMs > 60000 || (!info && ageMs > 3000);
-        if (stale) {
-          const confirmRaw = fs.readFileSync(lockPath, 'utf8');
-          if (confirmRaw === raw) {
-            try { fs.unlinkSync(lockPath); } catch {}
-            continue;
-          }
-        }
-      } catch (readErr) {
-        if (readErr.code === 'ENOENT') continue;
-        if (/Refusing unsafe lock symlink/.test(readErr.message)) throw readErr;
-      }
-      sleepSyncMs(45);
     }
+    await new Promise(resolve => setTimeout(resolve, 50));
   }
   if (!acquired) {
-    throw new Error(`Timed out waiting for DSH installation lock at ${lockPath}. Another install or uninstall process is currently modifying ${dshHomeReal}.`);
+    throw new Error(`Timed out waiting for DSH installation lock at ${lockPath}${lastHolderSummary ? ` (${lastHolderSummary})` : ''}. Another install or uninstall process is currently modifying ${dshHomeReal}.`);
   }
   try {
-    return fn(dshHomeReal);
+    return await fn(dshHomeReal);
   } finally {
     try {
-      const currentRaw = fs.readFileSync(lockPath, 'utf8');
-      const current = JSON.parse(currentRaw);
-      if (current?.nonce === nonce) fs.unlinkSync(lockPath);
+      withGuardDb(guardPath, () => {
+        try {
+          const st = fs.lstatSync(lockPath);
+          if (st.isSymbolicLink()) return;
+          const current = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+          if (current?.nonce === nonce) fs.unlinkSync(lockPath);
+        } catch {}
+      });
     } catch {}
   }
 }
@@ -562,13 +740,13 @@ function assertSafeDeletionTarget(dshHomeReal, targetPath) {
   return true;
 }
 
-function performInstall(opts) {
-  return withDshHomeLock(opts.dshHome, { createHome: true, mode: 'install', profile: opts.profile }, dshHomeReal => {
-    return performInstallLocked({ ...opts, dshHome: dshHomeReal });
+async function performInstall(opts) {
+  return await withDshHomeLock(opts.dshHome, { createHome: true, mode: 'install', profile: opts.profile }, async dshHomeReal => {
+    return await performInstallLocked({ ...opts, dshHome: dshHomeReal });
   });
 }
 
-function performInstallLocked(opts) {
+async function performInstallLocked(opts) {
   const { dshHome, profile } = opts;
   const dshCli = resolveDshCli(opts);
   const pkgSourceRoot = resolvePackageSourceRoot();
@@ -638,6 +816,7 @@ function performInstallLocked(opts) {
   fs.writeFileSync(path.join(backupRoot, 'previous-skills.json'), JSON.stringify(previousSkills, null, 2) + '\n', 'utf8');
 
   const hadPrevStage = fs.existsSync(stageRoot);
+  const usageBeforeInstall = !hadPrevStage ? inspectProfilesUsage(dshHome, profile) : null;
   if (hadPrevStage) fs.renameSync(stageRoot, prevStageBackup);
   try {
     fs.renameSync(tempStageRoot, stageRoot);
@@ -645,7 +824,7 @@ function performInstallLocked(opts) {
     // 3. Register both self-contained packages via native dsh plugin manager
     const agentSpec = 'link:' + path.join(stageRoot, 'superagent').replace(/\\/g, '/');
     const teamsSpec = 'link:' + path.join(stageRoot, 'super-teams').replace(/\\/g, '/');
-    runDshCli(dshCli, ['plugin', '--profile', profile, 'add', agentSpec, teamsSpec], dshHome);
+    await runDshCli(dshCli, ['plugin', '--profile', profile, 'add', agentSpec, teamsSpec], dshHome);
 
     // 4. Atomically stage and swap 4 skills as regular directories with SHA-256 lock verification
     const skillLocks = {};
@@ -681,9 +860,9 @@ function performInstallLocked(opts) {
       path.join(stageRoot, 'skill-lock.json'),
       JSON.stringify({
         generatedAt: new Date().toISOString(),
-        engineVersion: '0.19.1-dsh.1',
-        superagentVersion: '1.24.1-dsh.1',
-        superTeamsVersion: '0.16.1-dsh.1',
+        engineVersion: ENGINE_VERSION,
+        superagentVersion: SUPERAGENT_VERSION,
+        superTeamsVersion: SUPER_TEAMS_VERSION,
         skills: skillLocks,
       }, null, 2) + '\n',
       'utf8'
@@ -694,6 +873,16 @@ function performInstallLocked(opts) {
     if (hadPrevStage && fs.existsSync(prevStageBackup)) {
       removeEntrySafe(stageRoot);
       try { fs.renameSync(prevStageBackup, stageRoot); } catch {}
+    } else if (
+      !hadPrevStage &&
+      usageBeforeInstall &&
+      !usageBeforeInstall.profilesReadError &&
+      usageBeforeInstall.remainingProfiles.length === 0 &&
+      usageBeforeInstall.unknownProfiles.length === 0
+    ) {
+      try {
+        if (assertSafeDeletionTarget(dshHome, stageRoot)) removeEntrySafe(stageRoot);
+      } catch {}
     }
     throw err;
   }
@@ -725,6 +914,9 @@ function performInstallLocked(opts) {
   }
 
   const verification = verifyInstallation({ dshHome, profile });
+  const profileDataDir = path.join(dshHome, 'profiles', profile, 'plugin-data', 'dsh-super-teams');
+  const legacySharedDataDir = path.join(dshHome, 'plugin-data', 'dsh-super-teams');
+  const legacySharedExists = fs.existsSync(legacySharedDataDir);
   const report = {
     ok: true,
     mode: 'install',
@@ -733,10 +925,20 @@ function performInstallLocked(opts) {
     dshHome,
     profile,
     backup: backupRoot,
+    dataScope: 'profile-only',
+    profileDataDir,
+    ...(legacySharedExists
+      ? {
+          legacySharedDataPreserved: legacySharedDataDir,
+          warnings: [
+            `Legacy pre-profile shared data directory exists outside profile scope and was preserved untouched: ${legacySharedDataDir}`,
+          ],
+        }
+      : {}),
     versions: {
-      engine: '0.19.1-dsh.1',
-      superagent: '1.24.1-dsh.1',
-      superTeams: '0.16.1-dsh.1',
+      engine: ENGINE_VERSION,
+      superagent: SUPERAGENT_VERSION,
+      superTeams: SUPER_TEAMS_VERSION,
     },
     plugins: verification.plugins,
     skills: verification.skills,
@@ -746,19 +948,19 @@ function performInstallLocked(opts) {
   return report;
 }
 
-function performUninstall(opts) {
-  return withDshHomeLock(opts.dshHome, { createHome: false, mode: 'uninstall', profile: opts.profile }, dshHomeReal => {
-    return performUninstallLocked({ ...opts, dshHome: dshHomeReal });
+async function performUninstall(opts) {
+  return await withDshHomeLock(opts.dshHome, { createHome: false, mode: 'uninstall', profile: opts.profile }, async dshHomeReal => {
+    return await performUninstallLocked({ ...opts, dshHome: dshHomeReal });
   });
 }
 
-function performUninstallLocked(opts) {
+async function performUninstallLocked(opts) {
   const { dshHome, profile, purgeData } = opts;
   const dshCli = resolveDshCli(opts);
   const protectedBefore = snapshotProtectedFiles(dshHome);
 
   try {
-    runDshCli(dshCli, ['plugin', '--profile', profile, 'remove', ...PLUGIN_NAMES], dshHome);
+    await runDshCli(dshCli, ['plugin', '--profile', profile, 'remove', ...PLUGIN_NAMES], dshHome);
   } catch (err) {
     if (!/not installed|unknown|not found/i.test(err.message)) throw err;
   }
@@ -813,10 +1015,12 @@ function performUninstallLocked(opts) {
         : `referenced_by_other_profiles: ${usage.remainingProfiles.join(', ')}`;
   }
 
+  const profileDataDir = path.join(dshHome, 'profiles', profile, 'plugin-data', 'dsh-super-teams');
+  const legacySharedDataDir = path.join(dshHome, 'plugin-data', 'dsh-super-teams');
+  const legacySharedExists = fs.existsSync(legacySharedDataDir);
   if (purgeData) {
-    const dataTarget = path.join(dshHome, 'profiles', profile, 'plugin-data', 'dsh-super-teams');
-    if (assertSafeDeletionTarget(dshHome, dataTarget)) {
-      removeEntrySafe(dataTarget);
+    if (assertSafeDeletionTarget(dshHome, profileDataDir)) {
+      removeEntrySafe(profileDataDir);
     }
   }
 
@@ -827,7 +1031,18 @@ function performUninstallLocked(opts) {
     platform: process.platform,
     dshHome,
     profile,
+    dataScope: 'profile-only',
+    profileDataDir,
     purgedData: purgeData,
+    purgedDataPath: purgeData ? profileDataDir : null,
+    ...(legacySharedExists
+      ? {
+          legacySharedDataPreserved: legacySharedDataDir,
+          warnings: [
+            `Legacy pre-profile shared data directory exists outside profile scope and was preserved untouched: ${legacySharedDataDir}`,
+          ],
+        }
+      : {}),
     sharedAssetsPreserved,
     remainingProfiles: usage.remainingProfiles,
     unknownProfiles: usage.unknownProfiles,
@@ -843,8 +1058,8 @@ if (isMain) {
     const result = opts.mode === 'verify'
       ? verifyInstallation(opts)
       : opts.mode === 'uninstall'
-        ? performUninstall(opts)
-        : performInstall(opts);
+        ? await performUninstall(opts)
+        : await performInstall(opts);
 
     if (opts.json) {
       console.log(JSON.stringify(result, null, 2));
@@ -853,7 +1068,7 @@ if (isMain) {
     } else if (opts.mode === 'uninstall') {
       console.log(`[OK] Uninstalled SuperAgent + Super Teams from ${result.dshHome} (profile: ${result.profile}). Restart DeepSeek Harness to apply.`);
     } else {
-      console.log(`[OK] Installed SuperAgent 1.24.1-dsh.1 + Super Teams 0.16.1-dsh.1 (Engine 0.19.1-dsh.1) into ${result.dshHome} (profile: ${result.profile}).`);
+      console.log(`[OK] Installed SuperAgent ${SUPERAGENT_VERSION} + Super Teams ${SUPER_TEAMS_VERSION} (Engine ${ENGINE_VERSION}) into ${result.dshHome} (profile: ${result.profile}).`);
       console.log(`     Backup saved to: ${result.backup}`);
       console.log(`     Please restart DeepSeek Harness once to load the updated plugins and Team Workbench.`);
     }

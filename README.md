@@ -12,9 +12,9 @@
 
 | 组件 | 包名与版本 | 核心职责 |
 | --- | --- | --- |
-| **SuperAgent 协作与交付** | `@local/dsh-superagent-menu` (`1.24.1-dsh.1`) | 对外统一为 **SuperAgent** 产品执行协议：目标拆解、原话必达门禁（R2）、证据选路、多语言行为测试与 Git Worktree 集成方法论；内置 3 套技能与聊天「＋」入口 |
-| **Super Teams 审阅工作台与共享内核** | `@local/dsh-super-teams` (`0.16.1-dsh.1`) | 搭载与 Codex 字节级锁定的共享内核 `engine-core 0.19.1`（Engine `0.19.1-dsh.1`）：安全环境隔离与 Windows 长路径兜底、事务型预算熔断、精确关键路径调度、多聊天防跨会话漂移与事务重绑、`--force-with-lease` 远端交付门禁与只读 PR 对账 |
-| **AI 智能体专用安装 Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.3.1`) | 供其他 AI 智能体自动完成全平台检测、备份、单入口自包含安装、多配置引用保护卸载与逐文件 SHA-256 校验 |
+| **SuperAgent 协作与交付** | `@local/dsh-superagent-menu` (`1.25.0-dsh.1`) | 对外统一为 **SuperAgent** 产品执行协议：目标拆解、原话必达门禁（R2）、证据选路、多语言行为测试与 Git Worktree 集成方法论；内置 3 套技能与聊天「＋」入口 |
+| **Super Teams 审阅工作台与共享内核** | `@local/dsh-super-teams` (`0.17.0-dsh.1`) | 搭载与 Codex 字节级锁定的共享内核 `engine-core 0.19.1`（Engine `0.20.0-dsh.1`）：安全环境隔离与 Windows 长路径兜底、事务型预算熔断、精确关键路径调度、有界对账终态保护与 `expectedAttemptId` 精准解锁、多聊天防跨会话漂移与事务重绑、`--force-with-lease` 远端交付门禁与只读 PR 对账 |
+| **AI 智能体专用安装 Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.4.0`) | 供其他 AI 智能体自动完成全平台检测、SQLite 守护锁序列化安装、备份、单入口自包含安装、多配置引用保护卸载与逐文件 SHA-256 校验 |
 
 ---
 
@@ -85,18 +85,18 @@
 # 无损完整性校验（验证插件挂载、实体技能目录与逐文件 SHA-256）
 node ./scripts/install.mjs --verify
 
-# 干净卸载插件与 4 套技能（默认保留整个 plugin-data/dsh-super-teams/ 历史数据目录；若同 dshHome 下尚有其他 profile 引用或存在无法判定的 profile 清单，自动保留共享 packages/skills；加 --purge-data 连同数据一并清理）
+# 干净卸载插件与 4 套技能（默认保留整个 plugin-data/dsh-super-teams/ 历史数据目录；若同 dshHome 下尚有其他 profile 引用或存在无法判定的 profile 清单，自动保留共享 packages/skills；加 --purge-data 仅删除目标 profile 下数据，绝不删 legacy root 共享数据）
 node ./scripts/install.mjs --uninstall
 
-# 如绑定聊天已关闭，可通过工具 engine_team({ action: "rebind_session", teamId }) 或工作台按钮显式重绑到新聊天，绝不静默漂移到其他在线聊天
+# 如绑定聊天已关闭，可通过工具 engine_team({ action: "rebind_session", teamId }) 或工作台按钮显式重绑到新聊天，绝不静默漂移到其他在线聊天；卡住的未知任务达到 12 次对账上限或宿主中断终态时可通过 engine_control({ action: "resolve_unresolved", taskId, expectedRevision, expectedAttemptId, reason, evidence }) 显式解锁
 
-# 运行单元、跨重启对账、安全隔离、长路径兜底、预算熔断、远端交付、多配置卸载与跨宿主重放全套回归测试（需 Node >=22.13）
+# 运行单元、跨重启有界对账、安全隔离、长路径兜底、预算熔断、远端交付、多配置 SQLite 锁卸载与跨宿主重放全套 8 组回归测试（需 Node >=22.13）
 npm test
 ```
 
 > **完整备份警告（切勿只复制 `engine.sqlite`）**：`engine.sqlite` 仅保存团队与任务元数据及哈希索引；真实已验收交付快照、Git 补丁、登记来源与任务工作区分别存放在同目录的 `artifact-snapshots/`、`git-patches/`、`context/` 与 `attempts/` 中。备份或迁移数据时，请先退出 DeepSeek Harness，再**完整复制整个 `~/.dsh/profiles/<profile>/plugin-data/dsh-super-teams/` 目录**（包含 `engine.sqlite` 及 `-wal`/`-shm` 与全部子目录），仅复制单个 SQLite 文件会丢失所有交付文件。
 >
-> **安全与基准透明说明**：每次安装会自动在 `~/.dsh/profile-backups/dsh-super-plugins/` 生成独立回滚快照，绝不触碰 `.credentials.yaml`、`.env` 或其他已装插件。`node_test`、`command_test` 与工作区 `writeScopes` 扫描运行于当前用户权限下，不构成操作系统内核级沙箱。仓库内置 [`tests/v0200-env-bench-parity.test.mjs`](tests/v0200-env-bench-parity.test.mjs) 的 18 次（`6×3`）基准回归使用确定性测试夹具验证评测管线与精确符号检验逻辑，不代表真实多模型实机对照加速结论；CI 参考工作流模板位于 [`docs/ci-workflow.example.yml`](docs/ci-workflow.example.yml)。
+> **安全与基准透明说明**：每次安装会自动在 `~/.dsh/profile-backups/dsh-super-plugins/` 生成独立回滚快照，绝不触碰 `.credentials.yaml`、`.env` 或其他已装插件。`node_test`、`command_test` 与工作区 `writeScopes` 扫描运行于当前用户权限下，不构成操作系统内核级沙箱。外部仓库真模型双盲基准结果与方法学详见 [`docs/benchmarks/live-benchmark-v0.20.0.md`](docs/benchmarks/live-benchmark-v0.20.0.md)；仓库内置 [`tests/v0200-env-bench-parity.test.mjs`](tests/v0200-env-bench-parity.test.mjs) 的 18 次（`6×3`）基准回归使用确定性夹具验证评测管线与精确符号检验逻辑。当前实机回归运行于 Windows，macOS/Linux 逻辑与进程出生检查已按 POSIX 实现并备齐脚本，尚待在 macOS/Linux 实机跑通；CI 参考工作流模板位于 [`docs/ci-workflow.example.yml`](docs/ci-workflow.example.yml)。
 
 ## 开源许可
 

@@ -77,6 +77,7 @@ export function buildInspection(task,{budgetBytes=16384}={}) {
   const guidance=recoveryGuidance(task);
   if(guidance)value.recovery=guidance;
   if(task.budgetDetails)value.budgetDetails=structuredClone(task.budgetDetails);
+  if(task.unresolvedResolution)value.unresolvedResolution=structuredClone(task.unresolvedResolution);
   if(value.acceptance){value.acceptance.versionPinned??='unknown';value.acceptance.snapshotId??='unknown';}
   if(value.abandonment)value.abandonment.scope=abandonmentScope;
   value.verification??={status:'unknown',passed:null};
@@ -117,7 +118,7 @@ export function buildInspection(task,{budgetBytes=16384}={}) {
   if(size(value)+32>budgetBytes&&value.execution.usage!==undefined){delete value.execution.usage;value.omittedFields.push('usage');}
   if(size(value)+32>budgetBytes&&value.recovery){value.recovery={kind:value.recovery.kind};value.omittedFields.push('recovery.details');}
   if(size(value)+32>budgetBytes&&value.budgetDetails){delete value.budgetDetails.budgetBreakdown;value.omittedFields.push('budgetDetails.budgetBreakdown');value.budgetDetails.evidence='/api/tasks/'+task.id;}
-  for(const key of ['checks','goal','summary','error','resultFile','dependsOn','title','updatedAt','teamId','memberId','threadId','turnId','attemptId']){
+  for(const key of ['unresolvedResolution','checks','goal','summary','error','resultFile','dependsOn','title','updatedAt','teamId','memberId','threadId','turnId','attemptId']){
     if(size(value)+32<=budgetBytes)break;
     delete value[key];value.omittedFields.push(key);
   }

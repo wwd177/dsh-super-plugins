@@ -415,8 +415,8 @@ export function createDshEngineRouter({
           return send(200, engine.bindTeamSession(teamId, input.sessionId, { verifyOnline: true, actor: input?.actor ?? 'dsh-workbench:user' }));
         }
         if (req.method === 'POST' && parts[3] === 'control') {
-          if (input?.sessionId && typeof input.sessionId === 'string' && input.sessionId.trim()) {
-            try { engine.bindTeamSession(teamId, input.sessionId.trim(), { onlyIfUnbound: true, verifyOnline: false, actor: 'dsh-workbench:control' }); } catch {}
+          if (input?.action === 'resume' && input?.sessionId && typeof input.sessionId === 'string' && input.sessionId.trim()) {
+            engine.bindTeamSession(teamId, input.sessionId.trim(), { onlyIfUnbound: true, verifyOnline: true, actor: 'dsh-workbench:control' });
           }
           return send(200, await engine.teamControl(teamId, input.action));
         }
@@ -475,6 +475,7 @@ export function createDshEngineRouter({
           if (parts[3] === 'accept') return send(200, await engine.accept(id, { expectedRevision: input.expectedRevision, reason: input.reason, actor, acknowledgeHostFailure: input.acknowledgeHostFailure }));
           if (parts[3] === 'freeze') return send(200, await engine.freeze(id, { expectedRevision: input.expectedRevision, actor }));
           if (parts[3] === 'abandon') return send(200, await engine.abandon(id, { expectedRevision: input.expectedRevision, reason: input.reason, evidence: input.evidence, actor }));
+          if (parts[3] === 'resolve-unresolved') return send(200, engine.resolveUnresolved(id, { expectedRevision: input.expectedRevision, expectedAttemptId: input.expectedAttemptId, reason: input.reason, evidence: input.evidence, actor }));
           if (parts[3] === 'rework') return send(200, await engine.rework(id, { expectedRevision: input.expectedRevision, feedback: input.feedback, actor }));
           if (parts[3] === 'verify') return send(200, await engine.verify(id));
           if (parts[3] === 'reconcile') return send(200, await engine.reconcile(id));

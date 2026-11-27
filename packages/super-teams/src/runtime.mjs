@@ -658,6 +658,16 @@ export class DshSuperTeamsRuntime {
         });
         return buildInspection(t, { budgetBytes: 16384 });
       }
+      if (a.action === 'resolve_unresolved') {
+        const t = engine.resolveUnresolved(id, {
+          expectedRevision: a.expectedRevision,
+          expectedAttemptId: a.expectedAttemptId,
+          reason: a.reason,
+          evidence: a.evidence,
+          actor,
+        });
+        return buildInspection(t, { budgetBytes: 16384 });
+      }
       throw new Error(`Unsupported control action: ${a.action}`);
     }
 

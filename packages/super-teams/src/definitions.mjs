@@ -186,11 +186,12 @@ const primaryRawDefinitions = [
   ],
   [
     'engine_control',
-    'Inspect, control, verify, accept, freeze, rework or abandon an engine task. accept freezes registered artifacts/result into SHA-256 disk snapshots (failed host requires acknowledgeHostFailure=true and reason). rework sends reviewer feedback (via reason) with prior failed checks to re-run a task. abandon ends business follow-up on unknown execution while preserving occupied capacity.',
+    'Inspect, control, verify, accept, freeze, rework, abandon or release an unresolved abandoned slot on an engine task. accept freezes registered artifacts/result into SHA-256 disk snapshots (failed host requires acknowledgeHostFailure=true and reason). rework sends reviewer feedback (via reason) with prior failed checks to re-run a task. abandon ends business follow-up on unknown execution while preserving occupied capacity; resolve_unresolved releases the occupied slot after operator verification with expectedRevision, reason and evidence.',
     z.object({
       taskId: z.string().min(1),
-      action: z.enum(['inspect', 'pause', 'resume', 'cancel', 'reconcile', 'retry', 'rework', 'verify', 'accept', 'freeze', 'abandon']),
+      action: z.enum(['inspect', 'pause', 'resume', 'cancel', 'reconcile', 'retry', 'rework', 'verify', 'accept', 'freeze', 'abandon', 'resolve_unresolved']),
       expectedRevision: z.number().int().min(0).optional(),
+      expectedAttemptId: z.string().min(1).max(120).optional(),
       reason: z.string().max(4000).optional(),
       acknowledgeHostFailure: z.boolean().optional(),
       evidence: z.string().max(4000).optional(),
