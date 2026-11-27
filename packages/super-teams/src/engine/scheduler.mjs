@@ -1,6 +1,7 @@
 const PRIORITY_RANK = { critical: 4, high: 3, normal: 2, low: 1 };
 const DIFFICULTY_WEIGHT = { low: 1, easy: 1, medium: 2, high: 3, hard: 3 };
-const TERMINAL_DONE = new Set(['accepted']);
+const ACCEPTED_STATE = 'accepted';
+const TERMINAL_INACTIVE = new Set(['accepted', 'cancelled', 'abandoned']);
 
 export const VALID_PRIORITIES = ['critical', 'high', 'normal', 'low'];
 
@@ -85,47 +86,99 @@ export function analyzeTaskGraph(tasks = []) {
     return level;
   };
 
-  // Compute remaining critical path (depth & weighted effort to sink, counting unaccepted tasks)
+  // Monotonic fixed-point: start with accepted tasks as satisfied, then admit active tasks whose raw dependencies are all satisfied.
+  const satisfied = new Set();
+  for (const task of tasks) {
+    if (task.state === ACCEPTED_STATE) satisfied.add(task.id);
+  }
+  const schedulableActive = new Set();
+  let fixedPointChanged = true;
+  while (fixedPointChanged) {
+    fixedPointChanged = false;
+    for (const task of tasks) {
+      if (TERMINAL_INACTIVE.has(task.state) || schedulableActive.has(task.id)) continue;
+      const rawDeps = Array.isArray(task.dependsOn) ? task.dependsOn : [];
+      if (rawDeps.every(dep => satisfied.has(dep))) {
+        schedulableActive.add(task.id);
+        satisfied.add(task.id);
+        fixedPointChanged = true;
+      }
+    }
+  }
+
+  // Only retain original direct edges where both endpoints are schedulable active tasks (never bridge across accepted/dropped nodes).
+  const activeChildren = new Map();
+  for (const task of tasks) {
+    if (!schedulableActive.has(task.id)) {
+      activeChildren.set(task.id, []);
+      continue;
+    }
+    activeChildren.set(
+      task.id,
+      (children.get(task.id) ?? []).filter(cid => schedulableActive.has(cid))
+    );
+  }
+
+  // Compute transitive downstream count along the schedulable active subgraph only.
+  const downstreamMemo = new Map();
+  const computeDownstream = id => {
+    if (downstreamMemo.has(id)) return downstreamMemo.get(id);
+    if (!schedulableActive.has(id)) {
+      downstreamMemo.set(id, 0);
+      return 0;
+    }
+    const seen = new Set();
+    const stack = [...(activeChildren.get(id) ?? [])];
+    while (stack.length) {
+      const cur = stack.pop();
+      if (seen.has(cur) || !schedulableActive.has(cur)) continue;
+      seen.add(cur);
+      for (const next of activeChildren.get(cur) ?? []) stack.push(next);
+    }
+    const count = seen.size;
+    downstreamMemo.set(id, count);
+    return count;
+  };
+
+  // Compute remaining critical path (depth, weighted effort to sink, and deterministic next edge on the schedulable active subgraph).
   const cpMemo = new Map();
   const cpVisiting = new Set();
   const computeCritical = id => {
     if (cpMemo.has(id)) return cpMemo.get(id);
-    if (cpVisiting.has(id)) return { depth: 0, weight: 0 };
+    if (!schedulableActive.has(id)) return { depth: 0, weight: 0, nextId: null };
+    if (cpVisiting.has(id)) return { depth: 0, weight: 0, nextId: null };
     cpVisiting.add(id);
     const task = byId.get(id);
-    const selfActive = TERMINAL_DONE.has(task.state) ? 0 : 1;
-    const selfWeight = TERMINAL_DONE.has(task.state) ? 0 : (DIFFICULTY_WEIGHT[task.difficulty] ?? 2);
-    const kids = children.get(id) ?? [];
+    const selfWeight = DIFFICULTY_WEIGHT[task.difficulty] ?? 2;
+    const kids = activeChildren.get(id) ?? [];
     let bestDepth = 0;
     let bestWeight = 0;
+    let bestNextId = null;
     for (const childId of kids) {
       const sub = computeCritical(childId);
-      if (sub.weight > bestWeight || (sub.weight === bestWeight && sub.depth > bestDepth)) {
+      const childTask = byId.get(childId);
+      const bestTask = bestNextId ? byId.get(bestNextId) : null;
+      const isBetter =
+        bestNextId === null ||
+        sub.weight > bestWeight ||
+        (sub.weight === bestWeight && (
+          sub.depth > bestDepth ||
+          (sub.depth === bestDepth && (
+            priorityRank(childTask?.priority) > priorityRank(bestTask?.priority) ||
+            (priorityRank(childTask?.priority) === priorityRank(bestTask?.priority) &&
+              computeDownstream(childId) > computeDownstream(bestNextId))
+          ))
+        ));
+      if (isBetter) {
         bestDepth = sub.depth;
         bestWeight = sub.weight;
+        bestNextId = childId;
       }
     }
-    const res = { depth: selfActive + bestDepth, weight: selfWeight + bestWeight };
+    const res = { depth: 1 + bestDepth, weight: selfWeight + bestWeight, nextId: bestNextId };
     cpVisiting.delete(id);
     cpMemo.set(id, res);
     return res;
-  };
-
-  // Compute transitive downstream count (how many unaccepted tasks depend directly or transitively on this task)
-  const downstreamMemo = new Map();
-  const computeDownstream = id => {
-    if (downstreamMemo.has(id)) return downstreamMemo.get(id);
-    const seen = new Set();
-    const stack = [...(children.get(id) ?? [])];
-    while (stack.length) {
-      const cur = stack.pop();
-      if (seen.has(cur)) continue;
-      seen.add(cur);
-      for (const next of children.get(cur) ?? []) stack.push(next);
-    }
-    const count = [...seen].filter(cid => !TERMINAL_DONE.has(byId.get(cid)?.state)).length;
-    downstreamMemo.set(id, count);
-    return count;
   };
 
   const nodes = new Map();
@@ -134,7 +187,7 @@ export function analyzeTaskGraph(tasks = []) {
     const wave = computeWave(task.id);
     const cp = computeCritical(task.id);
     const downstreamCount = computeDownstream(task.id);
-    if (!TERMINAL_DONE.has(task.state) && cp.weight > maxCriticalWeight) {
+    if (schedulableActive.has(task.id) && cp.weight > maxCriticalWeight) {
       maxCriticalWeight = cp.weight;
     }
     nodes.set(task.id, {
@@ -156,23 +209,24 @@ export function analyzeTaskGraph(tasks = []) {
     });
   }
 
-  // Mark exact critical path chain starting from highest remaining critical weight unaccepted node(s)
+  // Reconstruct the exact critical path chain along deterministic direct edges chosen in computeCritical.
   const criticalPathIds = [];
   if (maxCriticalWeight > 0) {
     const roots = [...nodes.values()]
-      .filter(n => !TERMINAL_DONE.has(n.state) && n.criticalWeight === maxCriticalWeight)
-      .sort((a, b) => priorityRank(b.priority) - priorityRank(a.priority) || b.downstreamCount - a.downstreamCount || a.wave - b.wave);
-    let current = roots[0];
+      .filter(n => schedulableActive.has(n.id) && n.criticalWeight === maxCriticalWeight)
+      .sort((a, b) => (
+        priorityRank(b.priority) - priorityRank(a.priority)
+        || b.downstreamCount - a.downstreamCount
+        || a.wave - b.wave
+      ));
+    let current = roots[0] ?? null;
     const visited = new Set();
     while (current && !visited.has(current.id)) {
       visited.add(current.id);
       current.onCriticalPath = true;
       criticalPathIds.push(current.id);
-      const nextCandidates = (children.get(current.id) ?? [])
-        .map(cid => nodes.get(cid))
-        .filter(n => n && !TERMINAL_DONE.has(n.state))
-        .sort((a, b) => b.criticalWeight - a.criticalWeight || b.criticalDepth - a.criticalDepth || priorityRank(b.priority) - priorityRank(a.priority));
-      current = nextCandidates[0] ?? null;
+      const nextId = cpMemo.get(current.id)?.nextId ?? null;
+      current = nextId ? (nodes.get(nextId) ?? null) : null;
     }
   }
 
@@ -203,7 +257,7 @@ export function analyzeTaskGraph(tasks = []) {
     return false;
   };
   const scopeOverlaps = [];
-  const activeWithScopes = [...nodes.values()].filter(n => !TERMINAL_DONE.has(n.state) && !['cancelled', 'abandoned'].includes(n.state) && n.writeScopes.length > 0);
+  const activeWithScopes = [...nodes.values()].filter(n => !TERMINAL_INACTIVE.has(n.state) && n.writeScopes.length > 0);
   for (let i = 0; i < activeWithScopes.length; i++) {
     for (let j = i + 1; j < activeWithScopes.length; j++) {
       const a = activeWithScopes[i];
@@ -226,7 +280,7 @@ export function analyzeTaskGraph(tasks = []) {
   }
 
   const maxParallelWidth = waves.reduce((max, w) => Math.max(max, w.tasks.length), 0);
-  const remainingCount = [...nodes.values()].filter(n => !TERMINAL_DONE.has(n.state) && !['cancelled', 'abandoned'].includes(n.state)).length;
+  const remainingCount = [...nodes.values()].filter(n => !TERMINAL_INACTIVE.has(n.state)).length;
 
   return {
     totalTasks: tasks.length,
@@ -250,7 +304,8 @@ export function analyzeTaskGraph(tasks = []) {
  * 5. Creation timestamp (FIFO tie-breaker)
  */
 export function rankReadyCandidates(candidates, allTasks) {
-  if (candidates.length <= 1) return [...candidates];
+  if (!Array.isArray(candidates) || candidates.length === 0) return [];
+  if (candidates.length === 1) return [...candidates];
   const graph = analyzeTaskGraph(allTasks);
   return [...candidates].sort((a, b) => {
     const na = graph.nodes.get(a.id);

@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.19.1-dsh.1 (SuperAgent `1.24.1-dsh.1` / Super Teams `0.16.1-dsh.1` / Shared Core `0.19.1` / Installer Skill `1.3.1`)
+
+Addresses multi-profile installation safety, strict multi-chat dispatch affinity, graph-exact critical path scheduling, Windows `MAX_PATH` isolation hardening, and 100% release manifest consistency across both hosts:
+
+- **Multi-Profile Reference-Safe & Locked Installer/Uninstaller (`scripts/install.mjs`)**:
+  - Serializes installs and uninstalls per canonical physical `dshHome` via `.dsh-super-plugins.lock` (`wx` + PID/nonce ownership + stale lock cleanup).
+  - Fail-closed scan across `<dshHome>/profiles/*` using filesystem object identity (`dev:ino` + `realpath`), ancestor symlink/junction checks, `node_modules/@local/dsh-super*` detection, and strict manifest JSON validation: preserves shared `skills/` and `local-packages/dsh-super-plugins` whenever any sibling profile references the plugins or has an unreadable/corrupt manifest (`sharedAssetsPreserved: true`).
+- **Strict Multi-Chat Session Affinity & Transactional Rebind (`dsh-adapter.mjs`, `engine.mjs`, `dsh-http.mjs`, `runtime.mjs`, `definitions.mjs`)**:
+  - Removes silent fallback to `preferredSessionId` or `_liveRoots().at(-1)` whenever a task or team is bound to an explicit chat session (`resolveRootAgent` / `preflightSession`). Refuses dispatching into another online chat, avoids reserving budget or leaving orphan attempt directories, and prevents `models()` / `sessionSnapshot()` from leaking another chat's route selection when the bound chat is offline.
+  - Prevents background UI/sidebar `control` or `engine_workspace` calls from silently hijacking an already-bound team (`onlyIfUnbound: true`).
+  - Adds `engine_team({ action: 'rebind_session', teamId })` and `POST /api/teams/:id/rebind-session` (preserving the 8-tool contract) with atomic `REBIND_CONFLICT` guards against in-flight/unresolved executions and automatic wakeup of inherited `blocked(session-unavailable)` tasks.
+- **Exact Active-Subgraph Critical Path Scheduling (`scheduler.mjs` on Codex & DSH)**:
+  - Computes a monotonic fixed point `schedulableActive` seeded from `accepted` tasks over raw dependencies, strictly restricting `computeCritical`, `computeDownstream`, `maxCriticalWeight`, `criticalPathIds`, `scopeOverlaps`, and `remainingTasks` to active unblocked tasks along direct original edges (`cancelled`/`abandoned` nodes, downstream deadlocked tasks, and transitive bridges across intermediate `accepted` nodes are excluded cleanly).
+- **Windows Deep-Path Isolation Hardening (`core/src/process-isolation.mjs`, `core/src/env-recipe.mjs`, `verification.mjs`)**:
+  - Moves ephemeral verification tmp/home roots out of nested `attempts/<uuid>/<uuid>` directories into short `os.tmpdir()` prefixes (`sa-v-*` / `sa-h-*`) with length-budget guards (`AppData\Roaming` & `.gitconfig.lock`), 48-bit hex short evidence log names with `EEXIST` retry, automatic mid-init rollback, and `cleanup()` hooks in both `verification.mjs` and `WorktreeEnvManager`.
+- **100% Release Manifest & Line-Ending Parity (`.gitattributes`, `build-release.mjs`, `scripts/verify-release-manifest.mjs`, `docs/ci-workflow.example.yml`)**:
+  - Enforces LF line endings via `.gitattributes`, normalizes text files before generating `SHA256SUMS.json`, relocates the reference CI workflow template to `docs/ci-workflow.example.yml`, adds `scripts/verify-release-manifest.mjs` proving 100% SHA-256 identity across `HEAD` git blobs, working tree, ZIP archive, and remote ref, and clarifies deterministic fixture scope for the 18-run `v0.20` benchmark screening test.
+
 ## v0.19.0-dsh.1 (SuperAgent `1.24.0-dsh.1` / Super Teams `0.16.0-dsh.1` / Shared Core `0.19.0` / Installer Skill `1.3.0`)
 
 Hardens execution security isolation, transactional budget/breaker control, lease-checked remote Git/PR delivery, per-worktree environment recipes, and full UI E2E verification across both hosts on the byte-identical shared `engine-core 0.19.0`:

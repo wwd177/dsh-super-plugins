@@ -11,10 +11,10 @@ const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
 
 const PLUGIN_NAMES = ['@local/dsh-superagent-menu', '@local/dsh-super-teams'];
 const SKILL_ENTRIES = [
-  { name: 'superagent-workflow', package: 'superagent', version: '1.24.0-dsh.1' },
-  { name: 'workflow-quality', package: 'superagent', version: '1.24.0-dsh.1' },
-  { name: 'development-handoff', package: 'superagent', version: '1.24.0-dsh.1' },
-  { name: 'super-teams', package: 'super-teams', version: '0.16.0-dsh.1' },
+  { name: 'superagent-workflow', package: 'superagent', version: '1.24.1-dsh.1' },
+  { name: 'workflow-quality', package: 'superagent', version: '1.24.1-dsh.1' },
+  { name: 'development-handoff', package: 'superagent', version: '1.24.1-dsh.1' },
+  { name: 'super-teams', package: 'super-teams', version: '0.16.1-dsh.1' },
 ];
 
 function parseArgs(argv) {
@@ -193,9 +193,10 @@ function collectRelativeFiles(rootDir, current = rootDir, out = []) {
   return out;
 }
 
-function runDshCli(dshCli, args) {
+function runDshCli(dshCli, args, dshHome = null) {
   const cleanEnv = { ...process.env };
   delete cleanEnv.ELECTRON_RUN_AS_NODE;
+  if (dshHome) cleanEnv.DSH_HOME = dshHome;
 
   let res;
   if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(dshCli)) {
@@ -322,7 +323,252 @@ function verifyInstallation({ dshHome, profile }) {
   };
 }
 
+function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM';
+  }
+}
+
+const SLEEP_BUFFER = new Int32Array(new SharedArrayBuffer(4));
+function sleepSyncMs(ms) {
+  Atomics.wait(SLEEP_BUFFER, 0, 0, Math.max(1, ms));
+}
+
+function withDshHomeLock(dshHome, { createHome = false, mode, profile }, fn) {
+  if (createHome) {
+    fs.mkdirSync(dshHome, { recursive: true });
+  } else if (!fs.existsSync(dshHome)) {
+    return fn(dshHome);
+  }
+  const dshHomeReal = fs.realpathSync(dshHome);
+  const lockPath = path.join(dshHomeReal, '.dsh-super-plugins.lock');
+  const nonce = crypto.randomUUID();
+  const payload = JSON.stringify({
+    pid: process.pid,
+    nonce,
+    mode,
+    profile,
+    startedAt: new Date().toISOString(),
+  }) + '\n';
+  const deadline = Date.now() + 25000;
+  let acquired = false;
+
+  while (Date.now() < deadline) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx');
+      try {
+        fs.writeFileSync(fd, payload, 'utf8');
+      } finally {
+        fs.closeSync(fd);
+      }
+      acquired = true;
+      break;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      try {
+        const st = fs.lstatSync(lockPath);
+        if (st.isSymbolicLink()) {
+          throw new Error(`Refusing unsafe lock symlink at ${lockPath}`);
+        }
+        const raw = fs.readFileSync(lockPath, 'utf8');
+        let info = null;
+        if (raw.trim()) {
+          try { info = JSON.parse(raw); } catch { info = null; }
+        }
+        const ageMs = Date.now() - st.mtimeMs;
+        const deadOwner = info && Number.isInteger(info.pid) && !isPidAlive(info.pid);
+        const stale = deadOwner || ageMs > 60000 || (!info && ageMs > 3000);
+        if (stale) {
+          const confirmRaw = fs.readFileSync(lockPath, 'utf8');
+          if (confirmRaw === raw) {
+            try { fs.unlinkSync(lockPath); } catch {}
+            continue;
+          }
+        }
+      } catch (readErr) {
+        if (readErr.code === 'ENOENT') continue;
+        if (/Refusing unsafe lock symlink/.test(readErr.message)) throw readErr;
+      }
+      sleepSyncMs(45);
+    }
+  }
+  if (!acquired) {
+    throw new Error(`Timed out waiting for DSH installation lock at ${lockPath}. Another install or uninstall process is currently modifying ${dshHomeReal}.`);
+  }
+  try {
+    return fn(dshHomeReal);
+  } finally {
+    try {
+      const currentRaw = fs.readFileSync(lockPath, 'utf8');
+      const current = JSON.parse(currentRaw);
+      if (current?.nonce === nonce) fs.unlinkSync(lockPath);
+    } catch {}
+  }
+}
+
+function getDirIdentity(dirPath) {
+  const st = fs.statSync(dirPath, { bigint: true });
+  const realpath = fs.realpathSync(dirPath);
+  return { devIno: `${st.dev}:${st.ino}`, realpath };
+}
+
+function manifestReferencesOurPlugins(manifest) {
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) return false;
+  for (const field of ['dependencies', 'devDependencies', 'optionalDependencies']) {
+    const map = manifest[field];
+    if (map && typeof map === 'object' && PLUGIN_NAMES.some(name => Object.hasOwn(map, name))) {
+      return true;
+    }
+  }
+  const bundles = manifest?.dsh?.profile?.bundles;
+  return Array.isArray(bundles) && PLUGIN_NAMES.some(name => bundles.includes(name));
+}
+
+function inspectProfilesUsage(dshHomeReal, targetProfile) {
+  const profilesRoot = path.join(dshHomeReal, 'profiles');
+  if (!fs.existsSync(profilesRoot)) {
+    return {
+      profilesReadError: null,
+      targetStillReferences: false,
+      remainingProfiles: [],
+      unknownProfiles: [],
+    };
+  }
+  let entries;
+  try {
+    entries = fs.readdirSync(profilesRoot, { withFileTypes: true });
+  } catch (err) {
+    return {
+      profilesReadError: err.message || String(err),
+      targetStillReferences: true,
+      remainingProfiles: [],
+      unknownProfiles: ['<profiles-root>'],
+    };
+  }
+
+  let targetIdentity = null;
+  const targetDir = path.join(profilesRoot, targetProfile);
+  try {
+    if (fs.existsSync(targetDir)) {
+      targetIdentity = getDirIdentity(targetDir);
+    }
+  } catch {
+    return {
+      profilesReadError: `Cannot resolve target profile directory identity: ${targetDir}`,
+      targetStillReferences: true,
+      remainingProfiles: [],
+      unknownProfiles: [targetProfile],
+    };
+  }
+
+  let targetStillReferences = false;
+  const remainingProfiles = [];
+  const unknownProfiles = [];
+  const seenOtherIdentities = new Set();
+
+  for (const entry of entries) {
+    const entryPath = path.join(profilesRoot, entry.name);
+    let st;
+    let ident;
+    try {
+      fs.lstatSync(entryPath);
+      st = fs.statSync(entryPath, { bigint: true });
+      if (!st.isDirectory()) continue;
+      ident = getDirIdentity(entryPath);
+    } catch {
+      unknownProfiles.push(entry.name);
+      continue;
+    }
+
+    const isTarget =
+      entry.name === targetProfile ||
+      (targetIdentity && ident.realpath === targetIdentity.realpath && ident.devIno === targetIdentity.devIno);
+
+    const pkgPath = path.join(entryPath, 'package.json');
+    let parsedManifest = null;
+    let manifestValid = false;
+    try {
+      const raw = fs.readFileSync(pkgPath, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        parsedManifest = parsed;
+        manifestValid = true;
+      }
+    } catch {
+      manifestValid = false;
+    }
+
+    if (isTarget) {
+      if (!manifestValid || manifestReferencesOurPlugins(parsedManifest)) {
+        targetStillReferences = true;
+      }
+      continue;
+    }
+
+    const dedupKey = `${ident.devIno}|${ident.realpath}`;
+    if (seenOtherIdentities.has(dedupKey)) continue;
+    seenOtherIdentities.add(dedupKey);
+
+    if (!manifestValid) {
+      unknownProfiles.push(entry.name);
+      continue;
+    }
+    if (manifestReferencesOurPlugins(parsedManifest)) {
+      remainingProfiles.push(entry.name);
+    }
+  }
+
+  return {
+    profilesReadError: null,
+    targetStillReferences,
+    remainingProfiles,
+    unknownProfiles,
+  };
+}
+
+function assertSafeDeletionTarget(dshHomeReal, targetPath) {
+  const resolved = path.resolve(targetPath);
+  const rel = path.relative(dshHomeReal, resolved);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(`Refusing deletion outside DSH home (${dshHomeReal}): ${resolved}`);
+  }
+  const parentDir = path.dirname(resolved);
+  const segments = path.relative(dshHomeReal, parentDir).split(path.sep).filter(Boolean);
+  let cur = dshHomeReal;
+  for (const seg of segments) {
+    cur = path.join(cur, seg);
+    let lst;
+    try {
+      lst = fs.lstatSync(cur);
+    } catch (err) {
+      if (err.code === 'ENOENT') return false;
+      throw err;
+    }
+    if (lst.isSymbolicLink() || !lst.isDirectory()) {
+      throw new Error(`Refusing deletion beneath non-regular ancestor directory: ${cur}`);
+    }
+  }
+  if (fs.existsSync(parentDir)) {
+    const parentReal = fs.realpathSync(parentDir);
+    const parentRel = path.relative(dshHomeReal, parentReal);
+    if (parentRel.startsWith('..') || path.isAbsolute(parentRel)) {
+      throw new Error(`Refusing deletion whose resolved parent escaped DSH home: ${parentReal}`);
+    }
+  }
+  return true;
+}
+
 function performInstall(opts) {
+  return withDshHomeLock(opts.dshHome, { createHome: true, mode: 'install', profile: opts.profile }, dshHomeReal => {
+    return performInstallLocked({ ...opts, dshHome: dshHomeReal });
+  });
+}
+
+function performInstallLocked(opts) {
   const { dshHome, profile } = opts;
   const dshCli = resolveDshCli(opts);
   const pkgSourceRoot = resolvePackageSourceRoot();
@@ -399,7 +645,7 @@ function performInstall(opts) {
     // 3. Register both self-contained packages via native dsh plugin manager
     const agentSpec = 'link:' + path.join(stageRoot, 'superagent').replace(/\\/g, '/');
     const teamsSpec = 'link:' + path.join(stageRoot, 'super-teams').replace(/\\/g, '/');
-    runDshCli(dshCli, ['plugin', '--profile', profile, 'add', agentSpec, teamsSpec]);
+    runDshCli(dshCli, ['plugin', '--profile', profile, 'add', agentSpec, teamsSpec], dshHome);
 
     // 4. Atomically stage and swap 4 skills as regular directories with SHA-256 lock verification
     const skillLocks = {};
@@ -435,9 +681,9 @@ function performInstall(opts) {
       path.join(stageRoot, 'skill-lock.json'),
       JSON.stringify({
         generatedAt: new Date().toISOString(),
-        engineVersion: '0.19.0-dsh.1',
-        superagentVersion: '1.24.0-dsh.1',
-        superTeamsVersion: '0.16.0-dsh.1',
+        engineVersion: '0.19.1-dsh.1',
+        superagentVersion: '1.24.1-dsh.1',
+        superTeamsVersion: '0.16.1-dsh.1',
         skills: skillLocks,
       }, null, 2) + '\n',
       'utf8'
@@ -488,9 +734,9 @@ function performInstall(opts) {
     profile,
     backup: backupRoot,
     versions: {
-      engine: '0.19.0-dsh.1',
-      superagent: '1.24.0-dsh.1',
-      superTeams: '0.16.0-dsh.1',
+      engine: '0.19.1-dsh.1',
+      superagent: '1.24.1-dsh.1',
+      superTeams: '0.16.1-dsh.1',
     },
     plugins: verification.plugins,
     skills: verification.skills,
@@ -501,23 +747,77 @@ function performInstall(opts) {
 }
 
 function performUninstall(opts) {
+  return withDshHomeLock(opts.dshHome, { createHome: false, mode: 'uninstall', profile: opts.profile }, dshHomeReal => {
+    return performUninstallLocked({ ...opts, dshHome: dshHomeReal });
+  });
+}
+
+function performUninstallLocked(opts) {
   const { dshHome, profile, purgeData } = opts;
   const dshCli = resolveDshCli(opts);
   const protectedBefore = snapshotProtectedFiles(dshHome);
 
   try {
-    runDshCli(dshCli, ['plugin', '--profile', profile, 'remove', ...PLUGIN_NAMES]);
+    runDshCli(dshCli, ['plugin', '--profile', profile, 'remove', ...PLUGIN_NAMES], dshHome);
   } catch (err) {
     if (!/not installed|unknown|not found/i.test(err.message)) throw err;
   }
 
-  for (const entry of SKILL_ENTRIES) {
-    removeEntrySafe(path.join(dshHome, 'skills', entry.name));
+  const usage = inspectProfilesUsage(dshHome, profile);
+  if (usage.targetStillReferences) {
+    throw new Error(`Uninstall failed: profile "${profile}" still references SuperAgent/Super Teams plugins or manifests cannot be verified after removal.`);
   }
-  removeEntrySafe(path.join(dshHome, 'local-packages', 'dsh-super-plugins'));
+
+  // Clean up orphaned node_modules/@local plugin junctions left behind by pnpm remove inside targetProfile
+  for (const pkgShort of ['dsh-superagent-menu', 'dsh-super-teams']) {
+    const nmLink = path.join(dshHome, 'profiles', profile, 'node_modules', '@local', pkgShort);
+    try {
+      if (fs.lstatSync(nmLink).isSymbolicLink() && assertSafeDeletionTarget(dshHome, nmLink)) {
+        removeEntrySafe(nmLink);
+      }
+    } catch {}
+  }
+
+  const shouldPreserveShared =
+    Boolean(usage.profilesReadError) ||
+    usage.remainingProfiles.length > 0 ||
+    usage.unknownProfiles.length > 0;
+
+  let sharedAssetsPreserved = true;
+  let preservedReason = null;
+  if (!shouldPreserveShared) {
+    const targets = [
+      ...SKILL_ENTRIES.map(entry => path.join(dshHome, 'skills', entry.name)),
+      path.join(dshHome, 'local-packages', 'dsh-super-plugins'),
+    ];
+    const failures = [];
+    for (const targetPath of targets) {
+      try {
+        if (assertSafeDeletionTarget(dshHome, targetPath)) {
+          removeEntrySafe(targetPath);
+        }
+      } catch (err) {
+        failures.push(`${targetPath}: ${err.message}`);
+      }
+    }
+    if (failures.length > 0) {
+      const remainingOnDisk = targets.filter(p => fs.existsSync(p));
+      throw new Error(`Failed while removing shared assets (${failures.join('; ')}). Remaining paths: ${remainingOnDisk.join(', ')}`);
+    }
+    sharedAssetsPreserved = false;
+  } else {
+    preservedReason = usage.profilesReadError
+      ? `profiles_read_error: ${usage.profilesReadError}`
+      : usage.unknownProfiles.length > 0
+        ? `unreadable_or_unknown_profiles: ${usage.unknownProfiles.join(', ')}`
+        : `referenced_by_other_profiles: ${usage.remainingProfiles.join(', ')}`;
+  }
 
   if (purgeData) {
-    removeEntrySafe(path.join(dshHome, 'profiles', profile, 'plugin-data', 'dsh-super-teams'));
+    const dataTarget = path.join(dshHome, 'profiles', profile, 'plugin-data', 'dsh-super-teams');
+    if (assertSafeDeletionTarget(dshHome, dataTarget)) {
+      removeEntrySafe(dataTarget);
+    }
   }
 
   assertProtectedUnchanged(protectedBefore);
@@ -528,6 +828,10 @@ function performUninstall(opts) {
     dshHome,
     profile,
     purgedData: purgeData,
+    sharedAssetsPreserved,
+    remainingProfiles: usage.remainingProfiles,
+    unknownProfiles: usage.unknownProfiles,
+    ...(preservedReason ? { preservedReason } : {}),
     restartRequired: true,
   };
 }
@@ -549,7 +853,7 @@ if (isMain) {
     } else if (opts.mode === 'uninstall') {
       console.log(`[OK] Uninstalled SuperAgent + Super Teams from ${result.dshHome} (profile: ${result.profile}). Restart DeepSeek Harness to apply.`);
     } else {
-      console.log(`[OK] Installed SuperAgent 1.24.0-dsh.1 + Super Teams 0.16.0-dsh.1 (Engine 0.19.0-dsh.1) into ${result.dshHome} (profile: ${result.profile}).`);
+      console.log(`[OK] Installed SuperAgent 1.24.1-dsh.1 + Super Teams 0.16.1-dsh.1 (Engine 0.19.1-dsh.1) into ${result.dshHome} (profile: ${result.profile}).`);
       console.log(`     Backup saved to: ${result.backup}`);
       console.log(`     Please restart DeepSeek Harness once to load the updated plugins and Team Workbench.`);
     }

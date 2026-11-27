@@ -91,8 +91,9 @@ const primaryRawDefinitions = [
     'engine_team',
     'Manage durable SQLite-persisted teams, frozen goal criteria (R2), immutable delivery candidates & bound approvals (R3-R6), atomic local branch publish, read-only GitHub PR reconciliation (R7-R8), budget guards, repo probing, and remote PR delivery (v0.19) in the single engine store.',
     z.object({
-      action: z.enum(['prepare', 'create', 'list', 'overview', 'graph', 'accept_checked', 'merge_preview', 'merge_apply', 'criteria_get', 'criteria_preview', 'criteria_freeze', 'criteria_signoff', 'candidate_create', 'candidate_list', 'candidate_get', 'candidate_approve', 'approval_revoke', 'candidate_publish_local', 'publish_reconcile', 'candidate_base_drift', 'pr_reconcile', 'budget_get', 'budget_set', 'repo_probe', 'env_recipe_approve', 'security_posture', 'remote_push', 'remote_pr_create', 'remote_reconcile', 'remote_unknown_resolve', 'remote_event_ingest', 'remote_drift_resolve', 'pause', 'resume', 'cancel', 'archive', 'unarchive']),
+      action: z.enum(['prepare', 'create', 'list', 'overview', 'graph', 'accept_checked', 'merge_preview', 'merge_apply', 'criteria_get', 'criteria_preview', 'criteria_freeze', 'criteria_signoff', 'candidate_create', 'candidate_list', 'candidate_get', 'candidate_approve', 'approval_revoke', 'candidate_publish_local', 'publish_reconcile', 'candidate_base_drift', 'pr_reconcile', 'budget_get', 'budget_set', 'repo_probe', 'env_recipe_approve', 'security_posture', 'remote_push', 'remote_pr_create', 'remote_reconcile', 'remote_unknown_resolve', 'remote_event_ingest', 'remote_drift_resolve', 'rebind_session', 'pause', 'resume', 'cancel', 'archive', 'unarchive']),
       teamId: z.string().optional(),
+      sessionId: z.string().trim().min(1).max(180).optional(),
       requestId: z.string().optional(),
       name: z.string().optional(),
       goal: z.string().optional(),

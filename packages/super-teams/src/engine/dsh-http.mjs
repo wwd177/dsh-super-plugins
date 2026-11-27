@@ -268,7 +268,9 @@ export function createDshEngineRouter({
           if (typeof input.sessionId === 'string' && input.sessionId.trim()) {
             adapter.rememberSession?.(input.sessionId.trim(), input.cwd ?? null);
           }
-          if (input.teamId) engine.bindTeamSession?.(input.teamId, input.sessionId);
+          if (input.teamId && typeof input.sessionId === 'string' && input.sessionId.trim()) {
+            engine.bindTeamSession?.(input.teamId, input.sessionId.trim(), { onlyIfUnbound: true, verifyOnline: false, actor: 'dsh-workbench:auto' });
+          }
           return send(200, adapter.sessionSnapshot?.(input.sessionId ?? null) ?? { available: true });
         }
       }
@@ -409,12 +411,12 @@ export function createDshEngineRouter({
         if (req.method === 'POST' && parts[3] === 'pr' && parts[4] === 'reconcile') {
           return send(200, await engine.reconcileGitHubPr(teamId, input));
         }
-        if (req.method === 'POST' && parts[3] === 'session' && parts.length === 4) {
-          return send(200, engine.bindTeamSession(teamId, input.sessionId));
+        if ((req.method === 'POST' && parts[3] === 'session' && parts.length === 4) || (req.method === 'POST' && parts[3] === 'rebind-session' && parts.length === 4)) {
+          return send(200, engine.bindTeamSession(teamId, input.sessionId, { verifyOnline: true, actor: input?.actor ?? 'dsh-workbench:user' }));
         }
         if (req.method === 'POST' && parts[3] === 'control') {
           if (input?.sessionId && typeof input.sessionId === 'string' && input.sessionId.trim()) {
-            try { engine.bindTeamSession(teamId, input.sessionId.trim()); } catch {}
+            try { engine.bindTeamSession(teamId, input.sessionId.trim(), { onlyIfUnbound: true, verifyOnline: false, actor: 'dsh-workbench:control' }); } catch {}
           }
           return send(200, await engine.teamControl(teamId, input.action));
         }

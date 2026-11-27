@@ -24,6 +24,7 @@ import { killProcessTree } from './core/src/process-isolation.mjs';
 const hash = value => createHash('sha256').update(value).digest('hex');
 const now = () => new Date().toISOString();
 const clone = value => structuredClone(value);
+const cleanSessionId = value => (typeof value === 'string' && value.trim() ? value.trim() : null);
 const errorText = value => typeof value === 'string' ? value : value instanceof Error ? value.message : JSON.stringify(value);
 const executing = new Set(['dispatching', 'running', 'pausing', 'cancelling']);
 const teamPreserved = new Set(['accepted', 'checked', 'submitted', 'failed', 'cancelled', 'abandoned']);
@@ -224,14 +225,98 @@ export class Engine extends EventEmitter {
     this._saveTeam(team, archived ? 'team-archived' : 'team-unarchived');
     return this.getTeam(id);
   }
-  bindTeamSession(id, sessionId) {
-    if (typeof sessionId !== 'string' || !sessionId.trim() || sessionId.length > 180) throw new Error('Valid sessionId is required');
-    const team = this._team(id);
-    const clean = sessionId.trim();
-    if (team.sessionId === clean) return this.getTeam(id);
-    team.sessionId = clean;
-    this._saveTeam(team, 'team-session-bound');
-    return this.getTeam(id);
+  bindTeamSession(id, sessionId, { onlyIfUnbound = false, verifyOnline = false, actor = 'unknown' } = {}) {
+    const cleanTarget = cleanSessionId(sessionId);
+    if (!cleanTarget || cleanTarget.length > 180) throw new Error('Valid sessionId is required');
+    if (verifyOnline && this.adapter && !this.adapter.mockRunner && typeof this.adapter.resolveRootAgent === 'function') {
+      const onlineRoot = this.adapter.resolveRootAgent(cleanTarget);
+      if (!onlineRoot) {
+        throw Object.assign(
+          new Error(`目标聊天会话（${cleanTarget}）当前不在线，拒绝将团队重绑到离线或不存在的会话`),
+          { code: 'SESSION_UNAVAILABLE', requestedSessionId: cleanTarget }
+        );
+      }
+    }
+
+    let previousSessionId = null;
+    let rebound = false;
+    const wokenTaskIds = [];
+    const preservedExplicitTaskIds = [];
+    const wokenChanges = [];
+    const blockingStates = new Set(['dispatching', 'running', 'pausing', 'cancelling', 'unknown', 'paused-unconfirmed', 'cancelled-unconfirmed']);
+    const terminalWakeExcluded = new Set(['accepted', 'cancelled', 'abandoned', 'failed', 'submitted', 'checked']);
+
+    this.store.transaction(() => {
+      const team = this._team(id);
+      previousSessionId = cleanSessionId(team.sessionId);
+      if (onlyIfUnbound && previousSessionId && previousSessionId !== cleanTarget) {
+        return;
+      }
+      const teamTasks = this.store.teamTasks(id);
+      const sameTarget = previousSessionId === cleanTarget;
+      if (!sameTarget) {
+        const blocking = teamTasks.filter(t => executing.has(t.state) || t.executionUnresolved || blockingStates.has(t.state));
+        if (blocking.length > 0) {
+          throw Object.assign(
+            new Error(`存在 ${blocking.length} 项执行中或未决任务，拒绝切换团队会话绑定（冲突任务：${blocking.map(t => t.id).join(', ')}）`),
+            { code: 'REBIND_CONFLICT', blockingTaskIds: blocking.map(t => t.id) }
+          );
+        }
+        team.sessionId = cleanTarget;
+        team.revision = (team.revision ?? 0) + 1;
+        team.updatedAt = now();
+        this.store.saveTeam(team);
+        rebound = true;
+      }
+
+      for (const task of teamTasks) {
+        if (terminalWakeExcluded.has(task.state)) continue;
+        const cleanTaskSid = cleanSessionId(task.sessionId);
+        const isExplicit = task.sessionBinding === 'explicit' || (!task.sessionBinding && cleanTaskSid && cleanTaskSid !== previousSessionId);
+        if (isExplicit && cleanTaskSid !== cleanTarget) {
+          preservedExplicitTaskIds.push(task.id);
+          continue;
+        }
+        let mutated = false;
+        if (task.sessionId !== null || task.sessionBinding !== 'inherit') {
+          task.sessionId = null;
+          task.sessionBinding = 'inherit';
+          mutated = true;
+        }
+        const isSessionBlocked = task.state === 'blocked' && (task.blockReason === 'session-unavailable' || task.blockCode === 'SESSION_UNAVAILABLE');
+        if (isSessionBlocked && task.control === 'run' && !task.executionUnresolved) {
+          task.state = 'queued';
+          task.blockReason = null;
+          delete task.blockCode;
+          task.error = null;
+          task.runtimeError = null;
+          wokenTaskIds.push(task.id);
+          mutated = true;
+        }
+        if (mutated) {
+          wokenChanges.push(this._writeChange(task, isSessionBlocked ? 'session-rebound-woken' : 'session-binding-normalized', {
+            actor,
+            previousSessionId,
+            sessionId: cleanTarget,
+          }));
+        }
+      }
+    });
+
+    if (rebound) {
+      const afterTeam = this._team(id);
+      this.emit('change', { teamId: afterTeam.id, revision: afterTeam.revision, type: 'team-session-bound', control: afterTeam.control, previousSessionId, sessionId: cleanTarget });
+    }
+    for (const change of wokenChanges) this.emit('change', change);
+    if (wokenTaskIds.length > 0) this.runDue().catch(() => {});
+
+    return {
+      ...this.getTeam(id),
+      rebound,
+      previousSessionId,
+      wokenTaskIds,
+      preservedExplicitTaskIds,
+    };
   }
   async initialize({ connectInBackground = false } = {}) {
     if (this.store) return this;
@@ -356,7 +441,8 @@ export class Engine extends EventEmitter {
         const created = newTask({
           ...resolvedFields, teamId: team.id, memberId: memberIds.get(member), dependsOn: dependsOn.map(key => taskIds.get(key)),
         }, team, taskIds.get(key));
-        if (cleanSessionId) created.sessionId = cleanSessionId;
+        created.sessionId = null;
+        created.sessionBinding = 'inherit';
         return created;
       });
     }
@@ -463,6 +549,7 @@ export class Engine extends EventEmitter {
   async _syncTeamIntents() { for (const team of this.store.teams()) await this._applyTeamIntent(team.id, true); }
   _writeChange(task, type, detail) {
     if (task.state !== 'blocked' && !(task.state === 'paused' && task.blockReason === 'same_error_breaker')) task.blockReason = null;
+    if (task.state !== 'blocked') delete task.blockCode;
     task.updatedAt = now(); task.revision++;
     this.store.save(task);
     const event = this.store.event(task.id, { type, at: task.updatedAt, state: task.state, blockReason: task.blockReason ?? null, error: task.error ?? null, attemptId: task.attemptId, ...detail });
@@ -501,8 +588,22 @@ export class Engine extends EventEmitter {
     }
     validateSources(input, targetContext);
     const task = newTask(input, team);
-    const cleanSession = typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : (team?.sessionId ?? null);
-    if (cleanSession) task.sessionId = cleanSession;
+    const cleanTaskSession = cleanSessionId(sessionId);
+    const cleanTeamSession = cleanSessionId(team?.sessionId);
+    if (team) {
+      if (cleanTaskSession && cleanTaskSession !== cleanTeamSession) {
+        task.sessionId = cleanTaskSession;
+        task.sessionBinding = 'explicit';
+      } else {
+        task.sessionId = null;
+        task.sessionBinding = 'inherit';
+      }
+    } else if (cleanTaskSession) {
+      task.sessionId = cleanTaskSession;
+      task.sessionBinding = 'explicit';
+    } else {
+      task.sessionBinding = 'unbound';
+    }
     if (teamId && this.nativeCoordinator?.list(teamId).some(binding => binding.role === 'member' && binding.memberId === memberId)) task.executionKind = 'native';
     const change = this.store.transaction(() => {
       this.store.addRequest(requestId, fingerprint, task.id);
@@ -632,7 +733,35 @@ export class Engine extends EventEmitter {
           continue;
         }
       }
-      const effectiveSessionId = task.sessionId ?? (task.teamId ? this.store.team(task.teamId)?.sessionId : null) ?? null;
+      const team = task.teamId ? this.store.team(task.teamId) : null;
+      if (task.teamId && !team) {
+        if (task.state !== 'blocked' || task.blockReason !== 'preflight' || task.error !== 'Team record missing; cannot dispatch task') {
+          task.state = 'blocked'; task.blockReason = 'preflight'; task.error = 'Team record missing; cannot dispatch task';
+          this._save(task, 'team-missing-blocked');
+        }
+        continue;
+      }
+      const cleanTaskSession = cleanSessionId(task.sessionId);
+      const cleanTeamSession = cleanSessionId(team?.sessionId);
+      const effectiveSessionId = cleanTaskSession ?? cleanTeamSession;
+      const preparationTeamRevision = team?.revision ?? null;
+      if (typeof this.adapter.preflightSession === 'function') {
+        try {
+          this.adapter.preflightSession(effectiveSessionId);
+        } catch (sessionErr) {
+          const blockReason = sessionErr.blockReason ?? 'session-unavailable';
+          const blockCode = sessionErr.code ?? 'SESSION_UNAVAILABLE';
+          if (task.state !== 'blocked' || task.blockReason !== blockReason || task.error !== sessionErr.message || task.blockCode !== blockCode) {
+            task.state = 'blocked';
+            task.blockReason = blockReason;
+            task.blockCode = blockCode;
+            task.error = sessionErr.message;
+            task.runtimeError = null;
+            this._save(task, 'session-blocked');
+          }
+          continue;
+        }
+      }
       let models = defaultModels;
       if (effectiveSessionId) {
         if (!sessionModelsCache.has(effectiveSessionId)) {
@@ -750,11 +879,18 @@ export class Engine extends EventEmitter {
           budgetReservation = this.budgetGuard.reserveAttempt(task.teamId, attemptId);
         }
         task = this.store.get(task.id);
-        if (this.closed || task.revision !== preparationRevision || !this._mayRun(task) || !['queued', 'blocked'].includes(task.state)) {
-          if (budgetReservation?.enforced) this.budgetGuard.releaseAttempt(task.teamId, attemptId);
+        const latestTeam = task?.teamId ? this.store.team(task.teamId) : null;
+        const latestEffectiveSid = task ? (cleanSessionId(task.sessionId) ?? cleanSessionId(latestTeam?.sessionId)) : null;
+        const teamBindingIntact = !task?.teamId || (latestTeam && latestTeam.revision === preparationTeamRevision && latestEffectiveSid === effectiveSessionId);
+        let sessionStillReady = true;
+        if (teamBindingIntact && typeof this.adapter.preflightSession === 'function') {
+          try { this.adapter.preflightSession(effectiveSessionId); } catch { sessionStillReady = false; }
+        }
+        if (this.closed || !task || task.revision !== preparationRevision || !teamBindingIntact || !sessionStillReady || !this._mayRun(task) || !['queued', 'blocked'].includes(task.state)) {
+          if (budgetReservation?.enforced) this.budgetGuard.releaseAttempt(task?.teamId ?? candidate.teamId, attemptId);
           continue;
         }
-        Object.assign(task, { state: 'dispatching', attemptId, cwd, ...(isWorktree ? { workspaceMode: 'git-worktree', attemptStartCommit, appliedGitDependencies, engineMaterializedDirs } : {}), ...(effectiveSessionId ? { sessionId: effectiveSessionId } : {}), threadId: null, turnId: null, ...selection, dependencyVersions: dependencyContext.versions, dependencyManifest, contextManifest, packetBytes: packet.bytes, packetRequiredBytes: packet.requiredBytes, budgetBreakdown: packet.budgetBreakdown, budgetDetails: null, error: null, runtimeError: null, executionUnresolved: true, verification: null, summary: null, resultFile: null, resultSha256: null, completionStatus: null, recovery: null, nextRetryAt: null, startedAt: now(), finishedAt: null, durationMs: null });
+        Object.assign(task, { state: 'dispatching', attemptId, cwd, ...(isWorktree ? { workspaceMode: 'git-worktree', attemptStartCommit, appliedGitDependencies, engineMaterializedDirs } : {}), dispatchedSessionId: effectiveSessionId, expectedTeamRevision: preparationTeamRevision, threadId: null, turnId: null, ...selection, dependencyVersions: dependencyContext.versions, dependencyManifest, contextManifest, packetBytes: packet.bytes, packetRequiredBytes: packet.requiredBytes, budgetBreakdown: packet.budgetBreakdown, budgetDetails: null, error: null, runtimeError: null, executionUnresolved: true, verification: null, summary: null, resultFile: null, resultSha256: null, completionStatus: null, recovery: null, nextRetryAt: null, startedAt: now(), finishedAt: null, durationMs: null });
         if (native) Object.assign(task, { executionKind: 'native', nativeBindingId: native.binding.id, nativeBindingRevision: native.binding.revision,
           nativeThreadId: native.binding.threadId, nativeHostId: native.binding.hostId ?? 'local', nativeOriginThreadId: native.binding.originThreadId,
           nativeMarker: `[SUPERAGENT_NATIVE_TASK:${task.id}:${attemptId}]`, nativeAfterCursor: native.snapshot.cursor ?? null,
@@ -1067,7 +1203,8 @@ export class Engine extends EventEmitter {
       }
       const executionAdapter = task.executionKind === 'native' ? this.nativeAdapter : this.adapter;
       if (!executionAdapter) throw Object.assign(new Error('Native execution adapter is unavailable'), { executionNotStarted: true, nativeBlocked: true });
-      const handle = await executionAdapter.start({ ...task, prompt }, {
+      const dispatchSessionId = task.dispatchedSessionId ?? cleanSessionId(task.sessionId) ?? cleanSessionId(task.teamId ? this.store.team(task.teamId)?.sessionId : null);
+      const handle = await executionAdapter.start({ ...task, sessionId: dispatchSessionId, prompt }, {
         assertNativePermission: () => {
           const current = this._current(id, attemptId);
           if (current?.state !== 'dispatching' || !this._mayRun(current)) throw new Error('Native execution permission withdrawn before send');
@@ -1076,6 +1213,16 @@ export class Engine extends EventEmitter {
           if (task.executionKind === 'native') await this.nativeAdapter.preflight(task, { bindingId: task.nativeBindingId, bindingRevision: task.nativeBindingRevision });
           const current = this._current(id, attemptId);
           if (!current || !this._mayRun(current)) throw new Error('Execution permission withdrawn before turn start');
+          if (current.teamId) {
+            const liveTeam = this.store.team(current.teamId);
+            const liveEffectiveSid = cleanSessionId(current.sessionId) ?? cleanSessionId(liveTeam?.sessionId);
+            if (!liveTeam || liveEffectiveSid !== (current.dispatchedSessionId ?? null) || (current.expectedTeamRevision != null && liveTeam.revision !== current.expectedTeamRevision && liveEffectiveSid !== (current.dispatchedSessionId ?? null))) {
+              throw Object.assign(
+                new Error('Team session binding changed before execution start; aborting stale dispatch'),
+                { executionNotStarted: true, blocked: true, blockReason: 'preflight', code: 'SESSION_REBOUND' }
+              );
+            }
+          }
           await this._assertDependencyVersions(current);
           const checked = this._current(id, attemptId);
           if (!checked || checked.revision !== current.revision || !this._mayRun(checked)) throw new Error('Execution permission withdrawn during dependency verification');
@@ -1173,11 +1320,39 @@ export class Engine extends EventEmitter {
       this._inheritTeamControl(current);
       current.executionUnresolved = !error.executionNotStarted;
       current.completionStatus = error.executionNotStarted ? 'not-started' : null;
-      if (current.state !== 'abandoned') current.state = current.control === 'pause' ? (error.executionNotStarted ? 'paused' : 'paused-unconfirmed') : current.control === 'cancel' ? (error.executionNotStarted ? 'cancelled' : 'cancelled-unconfirmed') : error.executionNotStarted ? 'failed' : 'unknown';
-      if (error.nativeBlocked && current.control === 'run') { current.state = 'blocked'; current.blockReason = error.blockReason ?? 'preflight'; }
+      if (current.state !== 'abandoned') {
+        if ((error.nativeBlocked || error.blocked) && current.control === 'run') {
+          current.state = 'blocked';
+          current.blockReason = error.blockReason ?? 'preflight';
+          if (error.code) current.blockCode = error.code;
+        } else {
+          current.state = current.control === 'pause'
+            ? (error.executionNotStarted ? 'paused' : 'paused-unconfirmed')
+            : current.control === 'cancel'
+              ? (error.executionNotStarted ? 'cancelled' : 'cancelled-unconfirmed')
+              : error.executionNotStarted ? 'failed' : 'unknown';
+        }
+      }
+      if (error.executionNotStarted && current.state === 'blocked' && (error.code === 'SESSION_UNAVAILABLE' || error.code === 'SESSION_REBOUND' || error.blockReason === 'session-unavailable') && current.cwd) {
+        try {
+          const liveTeam = current.teamId ? this.store.team(current.teamId) : null;
+          if (current.workspaceMode === 'git-worktree' && liveTeam?.repoPath) {
+            await removeAttemptWorktree({ repoPath: liveTeam.repoPath, cwd: current.cwd, allowedBaseDir: path.join(this.dataDir, 'workspaces') });
+          } else {
+            const wsRoot = path.resolve(this.dataDir, 'workspaces');
+            const targetCwd = path.resolve(current.cwd);
+            const rel = path.relative(wsRoot, targetCwd);
+            if (rel && !rel.startsWith('..') && !path.isAbsolute(rel) && fs.existsSync(targetCwd) && !fs.lstatSync(targetCwd).isSymbolicLink()) {
+              fs.rmSync(targetCwd, { recursive: true, force: true });
+            }
+          }
+          current.cwd = null;
+          current.attemptId = null;
+        } catch {}
+      }
       current.error = `${error.executionNotStarted ? 'Execution did not start' : 'Execution outcome unknown'}: ${error.message}`;
       current.runtimeError = current.error;
-      this._save(current, error.executionNotStarted ? 'execution-not-started' : 'execution-unknown');
+      this._save(current, error.executionNotStarted ? (current.state === 'blocked' ? 'session-blocked' : 'execution-not-started') : 'execution-unknown');
     } finally {
       clearTimeout(durationTimer);
       if (this.handles.get(id)?.attemptId === attemptId) this.handles.delete(id);

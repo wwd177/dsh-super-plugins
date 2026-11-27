@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -220,7 +221,7 @@ function sourceScript(store, check) {
 export function validateTestSource(store, check) { if (check.type === 'node_test') sourceScript(store, check); }
 
 function buildSanitizedTestEnv(testTmpDir) {
-  return buildIsolatedTestEnv(testTmpDir, { preserveElectronAsNode: true }).env;
+  return buildIsolatedTestEnv(testTmpDir, { preserveElectronAsNode: true });
 }
 
 function resolveWindowsNpmLaunch(args) {
@@ -307,15 +308,51 @@ export function commandTestSelfModificationConflict(checks = [], changedPaths = 
   return null;
 }
 
+function removeOwnedTempDir(dirPath) {
+  if (!dirPath) return;
+  try {
+    const st = fs.lstatSync(dirPath);
+    if (st.isSymbolicLink()) return;
+    fs.rmSync(dirPath, { recursive: true, force: true });
+  } catch {}
+}
+
 async function runProcessWithEvidence({ label, exec, argv, cwd, extraEnv = {}, timeoutMs, evidenceDir, windowsVerbatimArguments = false }) {
-  const prefix = `${label}-${randomUUID()}`;
-  const testTmpDir = path.join(evidenceDir, `${prefix}-tmp`);
-  fs.mkdirSync(testTmpDir, { recursive: true });
-  const files = Object.fromEntries(['stdout', 'stderr'].map(stream => [stream, path.join(evidenceDir, `${prefix}.${stream}.txt`)]));
-  const descriptors = Object.fromEntries(Object.entries(files).map(([stream, file]) => [stream, fs.openSync(file, 'wx')]));
-  const env = { ...buildSanitizedTestEnv(testTmpDir), ...extraEnv };
+  let files = null;
+  let descriptors = null;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const shortId = randomUUID().replace(/-/g, '').slice(0, 12);
+    const prefix = `${label}-${shortId}`;
+    const candFiles = Object.fromEntries(['stdout', 'stderr'].map(stream => [stream, path.join(evidenceDir, `${prefix}.${stream}.txt`)]));
+    if (process.platform === 'win32') {
+      const overPath = Object.values(candFiles).find(file => file.length >= 250);
+      if (overPath) {
+        throw new Error(`Evidence output path exceeds Windows MAX_PATH safe budget (${overPath.length} chars): ${overPath}`);
+      }
+    }
+    const opened = {};
+    const createdFiles = [];
+    try {
+      for (const [stream, file] of Object.entries(candFiles)) {
+        opened[stream] = fs.openSync(file, 'wx');
+        createdFiles.push(file);
+      }
+      files = candFiles;
+      descriptors = opened;
+      break;
+    } catch (err) {
+      for (const fd of Object.values(opened)) { try { fs.closeSync(fd); } catch {} }
+      for (const created of createdFiles) { try { fs.rmSync(created, { force: true }); } catch {} }
+      if (err.code === 'EEXIST' && attempt < 7) continue;
+      throw err;
+    }
+  }
+  const testTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-v-'));
+  let iso = null;
   let bytes = 0, reason = null, code = null, signal = null;
   try {
+    iso = buildSanitizedTestEnv(testTmpDir);
+    const env = { ...iso.env, ...extraEnv };
     await new Promise(resolve => {
       const child = spawn(exec, argv, {
         cwd,
@@ -351,8 +388,9 @@ async function runProcessWithEvidence({ label, exec, argv, cwd, extraEnv = {}, t
       });
     });
   } finally {
-    Object.values(descriptors).forEach(fd => fs.closeSync(fd));
-    try { fs.rmSync(testTmpDir, { recursive: true, force: true }); } catch {}
+    Object.values(descriptors || {}).forEach(fd => { try { fs.closeSync(fd); } catch {} });
+    try { iso?.cleanup?.(); } catch {}
+    removeOwnedTempDir(testTmpDir);
   }
   const rawBuffers = {};
   const output = Object.fromEntries(Object.entries(files).map(([stream, file]) => {

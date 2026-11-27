@@ -2,6 +2,10 @@ import { randomUUID } from 'node:crypto';
 
 const DEFAULT_EFFORTS = ['low', 'medium', 'high'];
 
+function cleanSessionId(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
 function extractTextBlocks(blocks) {
   if (!Array.isArray(blocks)) return typeof blocks === 'string' ? blocks : '';
   const parts = [];
@@ -281,27 +285,120 @@ export class DshAdapter {
     return roots;
   }
 
+  _makeSessionUnavailableError(requestedSessionId, message) {
+    const req = cleanSessionId(requestedSessionId);
+    return Object.assign(new Error(message), {
+      executionNotStarted: true,
+      blocked: true,
+      blockReason: req ? 'session-unavailable' : 'preflight',
+      code: 'SESSION_UNAVAILABLE',
+      requestedSessionId: req,
+    });
+  }
+
   resolveRootAgent(requestedSessionId = null) {
     const { agents, subagents } = this._services();
     if (!agents || typeof agents.get !== 'function') return null;
-    const candidates = [requestedSessionId, this.preferredSessionId].filter(id => typeof id === 'string' && id.trim());
-    for (const id of candidates) {
-      const found = agents.get(id);
-      if (!found) continue;
+    const req = cleanSessionId(requestedSessionId);
+    if (req) {
+      const found = agents.get(req);
+      if (!found) return null;
       if (subagents && typeof subagents.rootOf === 'function') {
-        try { return subagents.rootOf(found); } catch { continue; }
+        try { return subagents.rootOf(found) ?? null; } catch { return null; }
       }
       return found;
     }
+    // Unbound invocation: allow single live root chat; NEVER guess when multiple chats are live.
     const roots = this._liveRoots();
-    return roots.at(-1) ?? null;
+    if (roots.length === 1) return roots[0];
+    return null;
+  }
+
+  preflightSession(requestedSessionId = null) {
+    if (this.closed) {
+      throw this._makeSessionUnavailableError(cleanSessionId(requestedSessionId), 'DshAdapter is closed');
+    }
+    if (this.mockRunner) return { ok: true, mode: 'mock' };
+    const { subagents, agents } = this._services();
+    if (!subagents || !agents || !subagents.getProvider?.(this.providerName)) {
+      throw Object.assign(
+        new Error('DeepSeek Harness 子代理服务（subagents/spawn）尚未就绪'),
+        { executionNotStarted: true, blocked: true, blockReason: 'preflight', code: 'SUBAGENT_SERVICE_UNAVAILABLE' }
+      );
+    }
+    const req = cleanSessionId(requestedSessionId);
+    const root = this.resolveRootAgent(req);
+    if (!root) {
+      if (req) {
+        throw this._makeSessionUnavailableError(
+          req,
+          `任务绑定的聊天会话（${req}）已关闭或不可用，拒绝跨会话派发到其他在线聊天；请重新打开原会话或使用 engine_team(rebind_session) 显式切换绑定`
+        );
+      }
+      const liveCount = this._liveRoots().length;
+      if (liveCount > 1) {
+        throw this._makeSessionUnavailableError(
+          null,
+          `当前存在 ${liveCount} 个在线主聊天会话且任务未绑定特定会话，拒绝猜测派发；请显式绑定团队会话`
+        );
+      }
+      throw this._makeSessionUnavailableError(
+        null,
+        '请先在 DeepSeek Harness 打开或选中一个活跃主聊天会话，随后再启动或恢复团队执行'
+      );
+    }
+    return { ok: true, rootId: root.id };
   }
 
   sessionSnapshot(requestedSessionId = null) {
-    const root = this.resolveRootAgent(requestedSessionId);
-    const { workingDirectory } = this._services();
+    const req = cleanSessionId(requestedSessionId);
+    const { workingDirectory, agents } = this._services();
     const roots = this._liveRoots();
-    if (!root) {
+    const listSessions = () => roots.map(item => ({
+      sessionId: item.id,
+      cwd: (workingDirectory?.get && item.session ? workingDirectory.get(item.session) : null) ?? item.session?.header?.cwd ?? null,
+    }));
+    const readRootSnapshot = root => {
+      let cwd = root.session?.header?.cwd ?? this.preferredWorkspaceCwd ?? null;
+      try {
+        if (workingDirectory?.get && root.session) cwd = workingDirectory.get(root.session) ?? cwd;
+      } catch { /* ignore */ }
+      const events = snapshotEventsSafe(root.session);
+      const { selected } = readParentSelectionFromEvents(events);
+      const provider = selected?.provider ?? root.options?.provider ?? null;
+      const model = selected?.model ?? root.options?.model ?? null;
+      return {
+        available: true,
+        ...(req ? { requestedSessionId: req, requestedSessionOnline: true } : {}),
+        activeSessionId: root.id,
+        cwd,
+        provider,
+        model,
+        liveSessionCount: roots.length,
+        sessions: listSessions(),
+      };
+    };
+
+    if (req) {
+      const targetRoot = this.resolveRootAgent(req);
+      if (!targetRoot) {
+        return {
+          available: false,
+          requestedSessionId: req,
+          requestedSessionOnline: false,
+          activeSessionId: null,
+          cwd: null,
+          liveSessionCount: roots.length,
+          sessions: listSessions(),
+        };
+      }
+      return readRootSnapshot(targetRoot);
+    }
+
+    const pref = cleanSessionId(this.preferredSessionId);
+    const prefRoot = pref ? this.resolveRootAgent(pref) : null;
+    const focusRoot = prefRoot ?? (roots.length === 1 ? roots[0] : roots.at(-1) ?? null);
+    if (!focusRoot) {
       return {
         available: Boolean(this.mockRunner) || roots.length > 0,
         activeSessionId: this.preferredSessionId ?? null,
@@ -310,26 +407,7 @@ export class DshAdapter {
         sessions: [],
       };
     }
-    let cwd = root.session?.header?.cwd ?? this.preferredWorkspaceCwd ?? null;
-    try {
-      if (workingDirectory?.get && root.session) cwd = workingDirectory.get(root.session) ?? cwd;
-    } catch { /* ignore */ }
-    const events = snapshotEventsSafe(root.session);
-    const { selected } = readParentSelectionFromEvents(events);
-    const provider = selected?.provider ?? root.options?.provider ?? null;
-    const model = selected?.model ?? root.options?.model ?? null;
-    return {
-      available: true,
-      activeSessionId: root.id,
-      cwd,
-      provider,
-      model,
-      liveSessionCount: roots.length,
-      sessions: roots.map(item => ({
-        sessionId: item.id,
-        cwd: (workingDirectory?.get && item.session ? workingDirectory.get(item.session) : null) ?? item.session?.header?.cwd ?? null,
-      })),
-    };
+    return readRootSnapshot(focusRoot);
   }
 
   status() {
@@ -391,8 +469,11 @@ export class DshAdapter {
         { model: 'deepseek-account/deepseek-flash', isDefault: false, supportedReasoningEfforts: ['default', 'low', 'medium'] },
       ];
     }
-    const root = this.resolveRootAgent(sessionId);
-    const cacheKey = root?.id ?? '__catalog__';
+    const req = cleanSessionId(sessionId);
+    const root = req
+      ? this.resolveRootAgent(req)
+      : (cleanSessionId(this.preferredSessionId) ? this.resolveRootAgent(this.preferredSessionId) : null) ?? this.resolveRootAgent(null);
+    const cacheKey = root?.id ?? (req ? `offline:${req}` : '__catalog__');
     if (this._modelsCache && this._modelsCache.key === cacheKey && Date.now() < this._modelsCache.expiresAt) {
       return structuredClone(this._modelsCache.models);
     }
@@ -591,18 +672,16 @@ export class DshAdapter {
       return { threadId, turnId, completion, interrupt: entry.interrupt };
     }
 
+    const preflight = this.preflightSession(task.sessionId ?? null);
     const { subagents, agents } = this._services();
-    if (!subagents || !agents || !subagents.getProvider?.(this.providerName)) {
-      throw Object.assign(
-        new Error('DeepSeek Harness 子代理服务（subagents/spawn）尚未就绪'),
-        { executionNotStarted: true, blockReason: 'preflight' }
-      );
-    }
-    const root = this.resolveRootAgent(task.sessionId ?? null);
+    const req = cleanSessionId(task.sessionId);
+    const root = this.resolveRootAgent(req ?? preflight.rootId);
     if (!root) {
-      throw Object.assign(
-        new Error('请先在 DeepSeek Harness 打开或选中一个活跃主聊天会话，随后再启动或恢复团队执行'),
-        { executionNotStarted: true, blockReason: 'preflight' }
+      throw this._makeSessionUnavailableError(
+        req,
+        req
+          ? `任务绑定的聊天会话（${req}）已关闭或不可用，拒绝派发到其他在线聊天`
+          : '请先在 DeepSeek Harness 打开或选中一个活跃主聊天会话，随后再启动或恢复团队执行'
       );
     }
 
@@ -611,6 +690,13 @@ export class DshAdapter {
     try {
       agentOptions = await this._buildChildAgentOptions(root, task, startupAbort.signal);
       await beforeExecute();
+      const liveRoot = this.resolveRootAgent(req ?? preflight.rootId);
+      if (!liveRoot || liveRoot.id !== root.id) {
+        throw this._makeSessionUnavailableError(
+          req ?? root.id,
+          `目标主聊天会话（${req ?? root.id}）在启动子代理前已关闭，已取消本次派工`
+        );
+      }
     } catch (error) {
       throw Object.assign(error, { executionNotStarted: true });
     }

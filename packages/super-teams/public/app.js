@@ -1990,9 +1990,11 @@ export async function mountSuperAgentWorkbench(root = document, options = {}) {
       const snap = await api('/dsh/session' + (activeSessionId ? '?sessionId=' + encodeURIComponent(activeSessionId) : ''));
       const sid = activeSessionId || snap.activeSessionId;
       if (!sid) throw new Error('未检测到可绑定的活跃主聊天会话');
-      await api('/teams/' + encodeURIComponent(currentTeam.id) + '/session', 'POST', { sessionId: sid });
-      notice('已将当前活跃会话挂载到该团队。');
+      const rebound = await api('/teams/' + encodeURIComponent(currentTeam.id) + '/rebind-session', 'POST', { sessionId: sid });
+      const wokenCount = Array.isArray(rebound?.wokenTaskIds) ? rebound.wokenTaskIds.length : 0;
+      notice(wokenCount ? `已将当前活跃会话挂载到该团队，并唤醒 ${wokenCount} 项因原会话离线阻断的任务。` : '已将当前活跃会话挂载到该团队。');
       await refreshDshSessionStatus();
+      await refresh(true);
     }));
   }
   function syncWorkspaceModeField() {

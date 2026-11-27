@@ -193,23 +193,31 @@ export class WorktreeEnvManager {
 
     const port = await this.allocatePort();
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'superagent-wt-env-'));
-    const { env } = buildIsolatedTestEnv(tempDir, {
-      extraEnv: {
-        ...extraEnv,
-        PORT: String(port),
-        SUPERAGENT_PORT: String(port),
-        WORKTREE_ID: String(worktreeId),
-      },
-    });
-
-    const child = spawn(command, args, {
-      cwd,
-      env,
-      shell: false,
-      windowsHide: true,
-      detached: process.platform !== 'win32',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    let iso;
+    let child;
+    try {
+      iso = buildIsolatedTestEnv(tempDir, {
+        extraEnv: {
+          ...extraEnv,
+          PORT: String(port),
+          SUPERAGENT_PORT: String(port),
+          WORKTREE_ID: String(worktreeId),
+        },
+      });
+      child = spawn(command, args, {
+        cwd,
+        env: iso.env,
+        shell: false,
+        windowsHide: true,
+        detached: process.platform !== 'win32',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      try { iso?.cleanup?.(); } catch {}
+      try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+      this.allocatedPorts.delete(port);
+      throw err;
+    }
 
     const entry = {
       worktreeId,
@@ -217,6 +225,7 @@ export class WorktreeEnvManager {
       child,
       port,
       tempDir,
+      cleanupEnv: iso.cleanup,
       recipeHash,
       logs: '',
       exited: false,
@@ -227,6 +236,10 @@ export class WorktreeEnvManager {
     });
     child.stderr?.on('data', chunk => {
       if (entry.logs.length < 16384) entry.logs += chunk.toString('utf8');
+    });
+    child.on('error', err => {
+      entry.exited = true;
+      if (entry.logs.length < 16384) entry.logs += `[spawn error] ${err.message}\n`;
     });
     child.on('close', () => {
       entry.exited = true;
@@ -258,6 +271,7 @@ export class WorktreeEnvManager {
     this.services.delete(worktreeId);
     if (entry.pid) killProcessTree(entry.pid);
     this.allocatedPorts.delete(entry.port);
+    try { entry.cleanupEnv?.(); } catch {}
     try { fs.rmSync(entry.tempDir, { recursive: true, force: true }); } catch {}
     return true;
   }

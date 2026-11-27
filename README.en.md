@@ -12,9 +12,9 @@ Runs directly inside the DeepSeek Harness Cordis host process — **zero externa
 
 | Component | Package & Version | Role |
 | --- | --- | --- |
-| **SuperAgent Workflow & Protocol** | `@local/dsh-superagent-menu` (`1.24.0-dsh.1`) | Unified **SuperAgent** execution protocol: goal criteria freezing (R2), evidence-based routing, polyglot verification gates, and Git worktree delivery methodology; includes 3 skills plus `+` menu actions |
-| **Super Teams Review Workbench & Shared Core** | `@local/dsh-super-teams` (`0.16.0-dsh.1`) | Powered by SHA-256 locked shared `engine-core 0.19.0` (`Engine 0.19.0-dsh.1`): isolated test environments & descendant tree kill, transactional budget & breaker guards, immutable candidates with switch-safe approvals, lease-checked remote delivery, env recipes, and read-only PR reconciliation |
-| **AI Agent Installer Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.3.0`) | Dedicated skill for any AI coding agent to safely install, verify, or uninstall the suite via one entrypoint |
+| **SuperAgent Workflow & Protocol** | `@local/dsh-superagent-menu` (`1.24.1-dsh.1`) | Unified **SuperAgent** execution protocol: goal criteria freezing (R2), evidence-based routing, polyglot verification gates, and Git worktree delivery methodology; includes 3 skills plus `+` menu actions |
+| **Super Teams Review Workbench & Shared Core** | `@local/dsh-super-teams` (`0.16.1-dsh.1`) | Powered by SHA-256 locked shared `engine-core 0.19.1` (`Engine 0.19.1-dsh.1`): isolated test environments with Windows long-path defense, exact active-subgraph critical-path scheduling, strict multi-chat session affinity & transactional rebinding, budget guards, and lease-checked remote delivery |
+| **AI Agent Installer Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.3.1`) | Dedicated skill for any AI coding agent to safely install, verify, or multi-profile-safely uninstall the suite via one entrypoint |
 
 ---
 
@@ -63,14 +63,16 @@ Restart **DeepSeek Harness** once after installation. Because packages and skill
 # Non-destructive health & SHA-256 parity check
 node ./scripts/install.mjs --verify
 
-# Clean uninstall (preserves the entire plugin-data/dsh-super-teams/ directory unless --purge-data is passed)
+# Clean uninstall (preserves plugin-data/dsh-super-teams/ unless --purge-data is passed, and preserves shared packages/skills while any sibling profile still references them)
 node ./scripts/install.mjs --uninstall
 
-# Run unit, persistence, behavioral gate, security isolation, budget guard, remote delivery & parity suites
+# Run full unit, persistence, behavioral gate, security isolation, long-path, multi-profile, critical-path, remote delivery & parity suites
 npm test
 ```
 
 > **Important Backup Note (Do NOT Copy Only `engine.sqlite`)**: `engine.sqlite` stores metadata, event logs, and hash indexes only — it does **not** embed frozen deliverable files or Git patches. To preserve deliverables and patches safely, close DeepSeek Harness first and back up the **entire `~/.dsh/profiles/<profile>/plugin-data/dsh-super-teams/` directory** (`engine.sqlite`, `-wal`/`-shm`, `artifact-snapshots/`, `git-patches/`, `context/`, and `attempts/`).
+>
+> **Benchmark & CI Transparency Note**: The 18 (`6×3`) screening runs inside [`tests/v0200-env-bench-parity.test.mjs`](tests/v0200-env-bench-parity.test.mjs) use deterministic fixtures to test the harness pipeline and exact binomial sign test rather than claiming live multi-model speedups. A reference GitHub Actions workflow template is provided at [`docs/ci-workflow.example.yml`](docs/ci-workflow.example.yml).
 
 ## License
 

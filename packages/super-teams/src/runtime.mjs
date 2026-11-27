@@ -324,7 +324,9 @@ export class DshSuperTeamsRuntime {
     if (name === 'engine_workspace') {
       if (a.teamId) {
         engine.getTeam(a.teamId);
-        if (caller.rootSessionId) engine.bindTeamSession(a.teamId, caller.rootSessionId);
+        if (caller.rootSessionId) {
+          engine.bindTeamSession(a.teamId, caller.rootSessionId, { onlyIfUnbound: true, verifyOnline: false, actor });
+        }
       }
       this.router?.notifyWorkbenchOpen({
         sessionId: caller.rootSessionId ?? null,
@@ -536,8 +538,32 @@ export class DshSuperTeamsRuntime {
       if (a.action === 'archive' || a.action === 'unarchive') {
         return engine.archiveTeam(a.teamId, a.action === 'archive');
       }
+      if (a.action === 'rebind_session') {
+        const requested = typeof a.sessionId === 'string' && a.sessionId.trim() ? a.sessionId.trim() : null;
+        const callerSid = caller.rootSessionId ?? null;
+        if (callerSid && requested && requested !== callerSid) {
+          throw new Error(`Refusing cross-chat session rebind from caller session ${callerSid} to ${requested}; invoke rebind_session inside the target chat session`);
+        }
+        const targetSessionId = requested ?? callerSid;
+        if (!targetSessionId) {
+          throw new Error('rebind_session requires an active DeepSeek Harness root session or explicit sessionId');
+        }
+        const bound = engine.bindTeamSession(a.teamId, targetSessionId, { actor, verifyOnline: true });
+        this.router?.notifyWorkbenchOpen({
+          sessionId: targetSessionId,
+          teamId: bound.id,
+        });
+        return {
+          teamId: bound.id,
+          previousSessionId: bound.previousSessionId ?? null,
+          sessionId: bound.sessionId ?? targetSessionId,
+          rebound: Boolean(bound.rebound),
+          wokenTaskIds: bound.wokenTaskIds ?? [],
+          preservedExplicitTaskIds: bound.preservedExplicitTaskIds ?? [],
+        };
+      }
       if (caller.rootSessionId) {
-        try { engine.bindTeamSession(a.teamId, caller.rootSessionId); } catch {}
+        try { engine.bindTeamSession(a.teamId, caller.rootSessionId, { onlyIfUnbound: true, verifyOnline: false, actor }); } catch {}
       }
       const result = await engine.teamControl(a.teamId, a.action);
       const counts = {};

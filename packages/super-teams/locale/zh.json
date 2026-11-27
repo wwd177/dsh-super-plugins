@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Super Teams",
-    "description": "SuperAgent 共享持久内核（Engine 0.19.0-dsh.1）：环境隔离与进程树清理、事务型预算守卫、目标门禁冻结、不可变交付候选、--force-with-lease 远端交付与只读 PR 对账工作台。"
+    "description": "SuperAgent 共享持久内核（Engine 0.19.1-dsh.1）：环境隔离与长路径防超限、事务型预算守卫、精确关键路径调度、多聊天会话严格防漂移与只读 PR 对账工作台。"
   }
 }
