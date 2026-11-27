@@ -12,8 +12,8 @@
 
 | 组件 | 包名与版本 | 核心职责 |
 | --- | --- | --- |
-| **SuperAgent 协作与交付** | `@local/dsh-superagent-menu` (`1.25.1-dsh.1`) | 对外统一为 **SuperAgent** 产品执行协议：目标拆解、原话必达门禁（R2）、证据选路、多语言行为测试与 Git Worktree 集成方法论；内置 3 套技能与聊天「＋」入口 |
-| **Super Teams 审阅工作台与共享内核** | `@local/dsh-super-teams` (`0.17.1-dsh.1`) | 搭载与 Codex 字节级锁定的共享内核 `engine-core 0.19.1`（Engine `0.20.1-dsh.1`）：多波次完整性交付门禁（`INCOMPLETE_TEAM_DELIVERY` / `TEAM_EXECUTION_IN_FLIGHT`）、安全环境隔离与 Windows 长路径兜底、事务型预算熔断、精确关键路径调度、有界对账终态保护与 `expectedAttemptId` 精准解锁、多聊天防跨会话漂移与事务重绑、`--force-with-lease` 远端交付门禁与只读 PR 对账 |
+| **SuperAgent 协作与交付** | `@local/dsh-superagent-menu` (`1.25.2-dsh.1`) | 对外统一为 **SuperAgent** 产品执行协议：目标拆解、原话必达门禁（R2）、证据选路、多语言行为测试与 Git Worktree 集成方法论；内置 3 套技能与聊天「＋」入口 |
+| **Super Teams 审阅工作台与共享内核** | `@local/dsh-super-teams` (`0.17.2-dsh.1`) | 搭载与 Codex 字节级锁定的共享内核 `engine-core 0.19.1`（Engine `0.20.2-dsh.1`）：修复 DSH 桌面端 Cordis 服务注入顺序竞态与 Electron 成果 ZIP 导出校验兼容，提供多波次完整性交付门禁（`INCOMPLETE_TEAM_DELIVERY` / `TEAM_EXECUTION_IN_FLIGHT`）、安全环境隔离与 Windows 长路径兜底、事务型预算熔断、精确关键路径调度、有界对账终态保护与多聊天防漂移 |
 | **AI 智能体专用安装 Skill** | [`dsh-super-plugins-installer`](skills/dsh-super-plugins-installer/SKILL.md) (`1.4.0`) | 供其他 AI 智能体自动完成全平台检测、SQLite 守护锁序列化安装、备份、单入口自包含安装、多配置引用保护卸载与逐文件 SHA-256 校验 |
 
 ---

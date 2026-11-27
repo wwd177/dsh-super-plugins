@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { DshSuperTeamsRuntime, primaryToolSchemas, legacyToolSchemas } from './src/runtime.mjs';
+import { DshSuperTeamsRuntime, primaryToolSchemas, legacyToolSchemas, safeCordisWarn } from './src/runtime.mjs';
 
 export const name = 'super-teams';
 export const inject = ['tools'];
@@ -146,25 +146,51 @@ export function apply(ctx, config = {}) {
     sctx.skills.registerProvider(() => provider);
   });
 
-  ctx.inject?.(['webServer'], wctx => {
+  ctx.inject?.(['webServer', 'connection'], wctx => {
     wctx.effect(() => {
       let active = true;
-      let unregisterRoute = null;
-      runtime.ensureStarted()
-        .then(() => {
-          if (!active || !runtime.router) return;
-          unregisterRoute = wctx.webServer.register({
-            kind: 'prefix',
-            path: '/superagent-engine',
-            handler: runtime.router.handler,
-          });
-        })
-        .catch(err => {
-          wctx.logger?.warn?.(`super-teams: failed to start workbench router: ${err?.message ?? err}`);
-        });
+      const unbindConnection = runtime.bindConnection(wctx.connection);
+      runtime.ensureStarted().catch(err => {
+        safeCordisWarn(wctx, `super-teams: failed to start workbench router: ${err?.message ?? err}`);
+      });
+      const unregisterRoute = wctx.webServer.register({
+        kind: 'prefix',
+        path: '/superagent-engine',
+        handler: async (req, res) => {
+          if (!active) {
+            res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ error: 'SuperAgent 工作台路由已卸载' }));
+            return;
+          }
+          if (typeof wctx.connection?.requestRejection !== 'function' || wctx.connection.requestRejection(req) !== undefined) {
+            res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ error: 'DeepSeek Harness 会话鉴权未通过' }));
+            return;
+          }
+          try {
+            await runtime.ensureStarted();
+          } catch (err) {
+            safeCordisWarn(wctx, `super-teams: workbench request failed during startup: ${err?.message ?? err}`);
+            if (!res.headersSent) {
+              res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8' });
+              res.end(JSON.stringify({ error: `SuperAgent 引擎初始化失败：${err?.message ?? err}` }));
+            }
+            return;
+          }
+          if (!active || !runtime.router) {
+            if (!res.headersSent) {
+              res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8' });
+              res.end(JSON.stringify({ error: 'SuperAgent 引擎路由尚未就绪' }));
+            }
+            return;
+          }
+          return runtime.router.handler(req, res);
+        },
+      });
       return () => {
         active = false;
         try { unregisterRoute?.(); } catch {}
+        try { unbindConnection?.(); } catch {}
       };
     }, 'super-teams: /superagent-engine route');
   });

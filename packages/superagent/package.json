@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-superagent-menu",
-  "version": "1.25.1-dsh.1",
+  "version": "1.25.2-dsh.1",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -35,6 +35,6 @@
   },
   "meta": {
     "title": "SuperAgent 协作与交付",
-    "description": "SuperAgent 协作与交付（1.25.1-dsh.1）；统一执行协议与目标验收方法论，与内置 Super Teams 审阅工作台共用 Engine 0.20.1-dsh.1 / Shared Core 0.19.1 共享内核（多波次完整性交付门禁、SQLite 守护锁、有界对账终态保护与多聊天防漂移）。"
+    "description": "SuperAgent 协作与交付（1.25.2-dsh.1）；统一执行协议与目标验收方法论，与内置 Super Teams 审阅工作台共用 Engine 0.20.2-dsh.1 / Shared Core 0.19.1 共享内核（多波次完整性交付门禁、SQLite 守护锁、有界对账终态保护与多聊天防漂移）。"
   }
 }

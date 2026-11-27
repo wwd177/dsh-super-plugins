@@ -79,16 +79,52 @@ window.__ModuleLoader__.load({
           const el = hostRef.current;
           if (!el) return undefined;
           let cancelled = false;
+          let retryTimer = null;
           const apiBase = resolveEngineBase();
+          const shadow = el.shadowRoot || el.attachShadow({ mode: 'open' });
 
-          (async () => {
+          const showFailure = (message, attempt) => {
+            if (cancelled || !el.shadowRoot) return;
+            const errBox = document.createElement('div');
+            errBox.style.padding = '16px';
+            errBox.style.font = '12px/1.6 sans-serif';
+            errBox.style.color = '#d65d55';
+            const msgEl = document.createElement('div');
+            msgEl.textContent = attempt < 2
+              ? `团队工作台正在重连（${attempt + 1}/2）：${message}`
+              : `团队工作台加载失败：${message}`;
+            errBox.appendChild(msgEl);
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.textContent = '重新加载';
+            btn.style.marginTop = '10px';
+            btn.style.padding = '4px 10px';
+            btn.style.font = '12px sans-serif';
+            btn.style.cursor = 'pointer';
+            btn.addEventListener('click', () => {
+              if (retryTimer !== null) {
+                clearTimeout(retryTimer);
+                retryTimer = null;
+              }
+              mountWorkbench(attempt + 1);
+            });
+            errBox.appendChild(btn);
+            el.shadowRoot.replaceChildren(errBox);
+          };
+
+          const mountWorkbench = async (attempt = 0) => {
             try {
-              const shadow = el.shadowRoot || el.attachShadow({ mode: 'open' });
               const [cssRes, htmlRes] = await Promise.all([
                 fetch(`${apiBase}/style.css`, { cache: 'no-store', credentials: 'same-origin' }),
                 fetch(`${apiBase}/template.html`, { cache: 'no-store', credentials: 'same-origin' }),
               ]);
               if (cancelled) return;
+              if (!cssRes.ok) throw new Error(`style.css HTTP ${cssRes.status}`);
+              if (!htmlRes.ok) throw new Error(`template.html HTTP ${htmlRes.status}`);
+              const cssType = (cssRes.headers?.get?.('content-type') || '').toLowerCase();
+              if (cssType.includes('text/html')) {
+                throw new Error('宿主未挂载 /superagent-engine 路由（返回了 HTML 回退页）');
+              }
               const [cssText, htmlText] = await Promise.all([cssRes.text(), htmlRes.text()]);
               if (cancelled) return;
               if (typeof CSSStyleSheet === 'function' && 'adoptedStyleSheets' in shadow) {
@@ -99,7 +135,8 @@ window.__ModuleLoader__.load({
               } else {
                 shadow.innerHTML = `<link rel="stylesheet" href="${apiBase}/style.css">${htmlText}`;
               }
-              const mod = await import(`${apiBase}/app.js`);
+              const moduleUrl = attempt > 0 ? `${apiBase}/app.js?retry=${attempt}` : `${apiBase}/app.js`;
+              const mod = await import(moduleUrl);
               if (cancelled) return;
               const initSid = sessionIdRef.current;
               const ctrl = await mod.mountSuperAgentWorkbench(shadow, {
@@ -115,16 +152,20 @@ window.__ModuleLoader__.load({
               const latestTeam = readTeamForSession(latestSid);
               if (latestTeam) ctrl.selectTeam?.(latestTeam);
             } catch (err) {
-              if (!cancelled && el.shadowRoot) {
-                const errBox = document.createElement('div');
-                errBox.style.padding = '16px';
-                errBox.style.font = '12px sans-serif';
-                errBox.style.color = '#d65d55';
-                errBox.textContent = `团队工作台加载失败：${String(err?.message || err)}`;
-                el.shadowRoot.replaceChildren(errBox);
+              if (cancelled) return;
+              const message = String(err?.message || err);
+              showFailure(message, attempt);
+              if (attempt < 2) {
+                if (retryTimer !== null) clearTimeout(retryTimer);
+                retryTimer = setTimeout(() => {
+                  retryTimer = null;
+                  if (!cancelled && !controllerRef.current) mountWorkbench(attempt + 1);
+                }, 400 * (attempt + 1));
               }
             }
-          })();
+          };
+
+          mountWorkbench(0);
 
           const onFocusTeam = ev => {
             const teamId = ev?.detail?.teamId;
@@ -137,6 +178,10 @@ window.__ModuleLoader__.load({
 
           return () => {
             cancelled = true;
+            if (retryTimer !== null) {
+              clearTimeout(retryTimer);
+              retryTimer = null;
+            }
             window.removeEventListener(FOCUS_TEAM_EVENT, onFocusTeam);
             try { controllerRef.current?.dispose?.(); } catch {}
             controllerRef.current = null;

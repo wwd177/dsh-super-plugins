@@ -56,7 +56,7 @@ const pluginRoot = process.env.DSH_PLUGIN_ROOT
 const superTeamsPlugin = await import(pathToFileURL(path.join(pluginRoot, 'super-teams/index.js')).href);
 const superAgentPlugin = await import(pathToFileURL(path.join(pluginRoot, 'superagent/index.js')).href);
 
-const { Context } = await native('cordis');
+const { Context, Service } = await native('cordis');
 const { default: Tools } = await native('dsh-tools');
 const { default: SystemPrompt } = await native('dsh-system-prompt');
 const executor = await native('dsh-tool-executor-native');
@@ -358,6 +358,94 @@ try {
       await provider.dispose();
     }
   }
+
+  // 8. Verify real Cordis Service injection when webServer boots BEFORE connection (with and without early tool call)
+  const testReverseOrder = async invokeToolEarly => {
+    const revCtx = new Context();
+    const revDataDir = path.join(tempRoot, `reverse-cordis-${invokeToolEarly ? 'early' : 'late'}`);
+    const revRoutes = [];
+    class ReverseWebServer extends Service {
+      constructor(c) { super(c, 'webServer', true); }
+      register(spec) {
+        revRoutes.push(spec);
+        return () => {
+          const i = revRoutes.indexOf(spec);
+          if (i >= 0) revRoutes.splice(i, 1);
+        };
+      }
+    }
+    class ReverseConnection extends Service {
+      constructor(c) { super(c, 'connection', true); }
+      requestRejection(req) {
+        return req.headers?.['x-dsh-allow'] === '1' ? undefined : 403;
+      }
+    }
+
+    revCtx.plugin(SystemPrompt, {});
+    revCtx.plugin(Tools);
+    revCtx.plugin(executor);
+    revCtx.plugin(ReverseWebServer);
+    revCtx.plugin(superTeamsPlugin, { dataDir: revDataDir });
+    await new Promise(resolve => setTimeout(resolve, 140));
+
+    try {
+      assert.equal(revRoutes.length, 0, 'Route must wait for connection before registering');
+      if (invokeToolEarly) {
+        const earlyView = await invoke('engine_overview', {}, null, revCtx.tools);
+        assert.equal(earlyView.total, 0, 'Tool execution before connection arrives must not crash on Cordis proxy');
+      }
+
+      revCtx.plugin(ReverseConnection);
+      await new Promise(resolve => setTimeout(resolve, 160));
+      assert.equal(revRoutes.length, 1, 'Route must register immediately once connection arrives');
+      assert.equal(revRoutes[0].path, '/superagent-engine');
+
+      const invokeRoute = async (urlPath, headers = {}) => {
+        let status = 200;
+        const resHeaders = {};
+        const chunks = [];
+        const req = { method: 'GET', url: urlPath, headers: { host: '127.0.0.1:52222', ...headers }, on() {} };
+        const res = {
+          setHeader(k, v) { resHeaders[String(k).toLowerCase()] = v; },
+          writeHead(code, h = {}) {
+            status = code;
+            for (const [k, v] of Object.entries(h)) resHeaders[String(k).toLowerCase()] = v;
+          },
+          end(chunk) {
+            if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+          },
+        };
+        await revRoutes[0].handler(req, res);
+        return { status, headers: resHeaders, text: Buffer.concat(chunks).toString('utf8') };
+      };
+
+      const unauth = await invokeRoute('/superagent-engine/app.js');
+      assert.equal(unauth.status, 403, 'Reverse-order route must fail-closed on missing DSH auth');
+
+      for (const [assetPath, expectedCt] of [
+        ['/superagent-engine/style.css', 'text/css'],
+        ['/superagent-engine/template.html', 'text/html'],
+        ['/superagent-engine/app.js', 'text/javascript'],
+        ['/superagent-engine/delivery-download.js', 'text/javascript'],
+      ]) {
+        const r = await invokeRoute(assetPath, { 'x-dsh-allow': '1' });
+        assert.equal(r.status, 200, `Expected 200 for ${assetPath}, got ${r.status}`);
+        assert((r.headers['content-type'] || '').includes(expectedCt), `Expected ${expectedCt} for ${assetPath}, got ${r.headers['content-type']}`);
+      }
+
+      const healthRes = await invokeRoute('/superagent-engine/api/health', { 'x-dsh-allow': '1' });
+      assert.equal(healthRes.status, 200, `Expected 200 on /api/health (fenced mode, not standalone 401), got ${healthRes.status}`);
+      const changesRes = await invokeRoute('/superagent-engine/api/changes?since=-1', { 'x-dsh-allow': '1' });
+      assert.equal(changesRes.status, 200);
+      assert.equal(typeof JSON.parse(changesRes.text).seq, 'number');
+    } finally {
+      await revCtx.fiber.dispose();
+    }
+  };
+
+  await testReverseOrder(true);
+  await testReverseOrder(false);
+  checks.push('Cordis reverse-order boot (webServer before connection, with and without early tool call) serves /superagent-engine assets & fenced API');
 
   console.log(JSON.stringify({ passed: true, checksCount: checks.length, checks }, null, 2));
 } finally {

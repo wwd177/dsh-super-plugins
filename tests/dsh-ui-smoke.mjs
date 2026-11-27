@@ -785,6 +785,11 @@ try {
   await untilDual("window.__HOST_A__.shadowRoot.querySelector('[data-v19-pr-pills]')?.textContent.includes('1. 本地集成发布：已发布本地分支') && window.__HOST_A__.shadowRoot.querySelector('[data-v19-pr-pills]')?.textContent.includes('2. 远端 PR：已合入 (存在版本差异)') && window.__HOST_A__.shadowRoot.querySelector('[data-v19-pr-pills]')?.textContent.includes('远端已合入但本地未变绿')");
   const v19Overflow = await evalDual("(() => { const sh = window.__HOST_A__.shadowRoot.getElementById('sa-shell'); return sh.scrollWidth - sh.clientWidth; })()");
   assert.ok(v19Overflow <= 1, `Expected <=1px overflow on 400px v0.19 sidebar, got +${v19Overflow}px`);
+  const zipCheck = await fetch(`${fencedOrigin}/superagent-engine/api/teams/${encodeURIComponent(v19Team.id)}/delivery.zip`);
+  assert.equal(zipCheck.status, 200);
+  assert.match(String(zipCheck.headers.get('x-delivery-bytes') || ''), /^\d+$/);
+  assert.match(String(zipCheck.headers.get('x-delivery-sha256') || ''), /^[a-f0-9]{64}$/i);
+  await zipCheck.arrayBuffer();
   await evalDual("(window.__CLEANUPS__ || []).forEach(fn => { try { fn(); } catch {} });");
   checks.push('v019_ui_probe_budget_cases_abc_and_zero_overflow');
 

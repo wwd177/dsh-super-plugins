@@ -47,7 +47,13 @@ export async function fetchDelivery(teamId, { token = '', apiBase = '', signal }
     await response.body?.cancel();
     throw new Error('返回内容不是 ZIP，未保存文件');
   }
-  const length = response.headers.get('content-length');
+  const contentLength = response.headers.get('content-length');
+  const deliveryBytes = response.headers.get('x-delivery-bytes');
+  if (contentLength && deliveryBytes && contentLength !== deliveryBytes) {
+    await response.body?.cancel();
+    throw new Error('下载校验信息不一致，未保存文件');
+  }
+  const length = contentLength || deliveryBytes;
   const sha = response.headers.get('x-delivery-sha256');
   if (!length || !/^\d+$/.test(length) || Number(length) <= 0 || Number(length) > maxDownloadBytes || !sha || !/^[a-f0-9]{64}$/i.test(sha)) {
     await response.body?.cancel();

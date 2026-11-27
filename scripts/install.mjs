@@ -10,9 +10,9 @@ import { fileURLToPath } from 'node:url';
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
 
-const ENGINE_VERSION = '0.20.1-dsh.1';
-const SUPERAGENT_VERSION = '1.25.1-dsh.1';
-const SUPER_TEAMS_VERSION = '0.17.1-dsh.1';
+const ENGINE_VERSION = '0.20.2-dsh.1';
+const SUPERAGENT_VERSION = '1.25.2-dsh.1';
+const SUPER_TEAMS_VERSION = '0.17.2-dsh.1';
 
 const PLUGIN_NAMES = ['@local/dsh-superagent-menu', '@local/dsh-super-teams'];
 const SKILL_ENTRIES = [
@@ -154,6 +154,9 @@ function resolvePackageSourceRoot() {
   throw new Error(`Cannot find superagent and super-teams package directories under ${REPO_ROOT}`);
 }
 
+const TRANSIENT_FS_CODES = new Set(['EPERM', 'EBUSY', 'EACCES', 'ENOTEMPTY']);
+const sleepMs = ms => new Promise(resolve => setTimeout(resolve, ms));
+
 function removeEntrySafe(targetPath) {
   let st;
   try {
@@ -172,6 +175,95 @@ function removeEntrySafe(targetPath) {
     return;
   }
   fs.rmSync(targetPath, { recursive: true, force: true });
+}
+
+async function removeEntryWithRetry(targetPath, attempts = 8) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      removeEntrySafe(targetPath);
+      return;
+    } catch (err) {
+      if (!TRANSIENT_FS_CODES.has(err?.code) || i === attempts - 1) throw err;
+      await sleepMs(40 * (i + 1));
+    }
+  }
+}
+
+async function renameWithRetry(srcPath, dstPath, attempts = 10) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      fs.renameSync(srcPath, dstPath);
+      return;
+    } catch (err) {
+      if (!TRANSIENT_FS_CODES.has(err?.code) || i === attempts - 1) throw err;
+      await sleepMs(40 * (i + 1));
+    }
+  }
+}
+
+async function copyFileWithRetry(srcFile, dstFile, attempts = 8) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      fs.copyFileSync(srcFile, dstFile);
+      return;
+    } catch (err) {
+      if (!TRANSIENT_FS_CODES.has(err?.code) || i === attempts - 1) throw err;
+      await sleepMs(40 * (i + 1));
+    }
+  }
+}
+
+async function syncPlainTreeInPlace(srcDir, dstDir) {
+  const srcFull = path.resolve(srcDir);
+  const dstFull = path.resolve(dstDir);
+  try {
+    const st = fs.lstatSync(dstFull);
+    if (st.isSymbolicLink() || !st.isDirectory()) {
+      await removeEntryWithRetry(dstFull);
+    }
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+  fs.mkdirSync(dstFull, { recursive: true });
+
+  const expected = new Map();
+  for (const entry of fs.readdirSync(srcFull, { withFileTypes: true })) {
+    expected.set(entry.name, entry.isDirectory());
+  }
+
+  for (const existing of fs.readdirSync(dstFull, { withFileTypes: true })) {
+    const dstChild = path.join(dstFull, existing.name);
+    if (!expected.has(existing.name) || expected.get(existing.name) !== existing.isDirectory()) {
+      await removeEntryWithRetry(dstChild);
+    }
+  }
+
+  for (const entry of fs.readdirSync(srcFull, { withFileTypes: true })) {
+    const srcChild = path.join(srcFull, entry.name);
+    const dstChild = path.join(dstFull, entry.name);
+    if (entry.isDirectory()) {
+      await syncPlainTreeInPlace(srcChild, dstChild);
+    } else if (entry.isFile()) {
+      await copyFileWithRetry(srcChild, dstChild);
+    }
+  }
+}
+
+async function replaceDirectoryAtomicOrInPlace(stagedDir, dstDir) {
+  try {
+    const st = fs.lstatSync(dstDir);
+    if (st.isSymbolicLink()) await removeEntryWithRetry(dstDir);
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+  try {
+    await removeEntryWithRetry(dstDir);
+    await renameWithRetry(stagedDir, dstDir);
+  } catch (err) {
+    if (!TRANSIENT_FS_CODES.has(err?.code)) throw err;
+    await syncPlainTreeInPlace(stagedDir, dstDir);
+    try { await removeEntryWithRetry(stagedDir); } catch {}
+  }
 }
 
 function copyPlainTree(srcDir, dstDir) {
@@ -817,36 +909,58 @@ async function performInstallLocked(opts) {
 
   const hadPrevStage = fs.existsSync(stageRoot);
   const usageBeforeInstall = !hadPrevStage ? inspectProfilesUsage(dshHome, profile) : null;
-  if (hadPrevStage) fs.renameSync(stageRoot, prevStageBackup);
+  let movedPrevStage = false;
+  let inPlaceStageBackup = false;
+  const activeTempSkills = [];
+  if (hadPrevStage) {
+    try {
+      await renameWithRetry(stageRoot, prevStageBackup);
+      movedPrevStage = true;
+    } catch (err) {
+      if (!TRANSIENT_FS_CODES.has(err?.code)) throw err;
+      copyPlainTree(stageRoot, prevStageBackup);
+      inPlaceStageBackup = true;
+    }
+  }
   try {
-    fs.renameSync(tempStageRoot, stageRoot);
+    if (inPlaceStageBackup) {
+      await syncPlainTreeInPlace(tempStageRoot, stageRoot);
+      await removeEntryWithRetry(tempStageRoot).catch(() => {});
+    } else {
+      await renameWithRetry(tempStageRoot, stageRoot);
+    }
 
     // 3. Register both self-contained packages via native dsh plugin manager
     const agentSpec = 'link:' + path.join(stageRoot, 'superagent').replace(/\\/g, '/');
     const teamsSpec = 'link:' + path.join(stageRoot, 'super-teams').replace(/\\/g, '/');
     await runDshCli(dshCli, ['plugin', '--profile', profile, 'add', agentSpec, teamsSpec], dshHome);
 
-    // 4. Atomically stage and swap 4 skills as regular directories with SHA-256 lock verification
+    // 4. Stage outside skills/ (avoids triggering fs.watch on temp dirs) and replace atomically with in-place fallback
     const skillLocks = {};
     for (const entry of SKILL_ENTRIES) {
       const src = path.join(stageRoot, entry.package, 'skills', entry.name);
       const dst = path.join(skillRoot, entry.name);
-      const tempSkillDst = path.join(skillRoot, `.staging-${entry.name}-${process.pid}-${randSuffix}`);
-      removeEntrySafe(tempSkillDst);
+      const tempSkillDst = path.join(dshHome, `.staging-skill-${entry.name}-${process.pid}-${randSuffix}`);
+      await removeEntryWithRetry(tempSkillDst);
+      activeTempSkills.push(tempSkillDst);
       copyPlainTree(src, tempSkillDst);
 
+      const expectedFiles = collectRelativeFiles(src);
       const files = {};
-      for (const rel of collectRelativeFiles(src)) {
+      for (const rel of expectedFiles) {
         const h = sha256File(path.join(src, rel));
         const dh = sha256File(path.join(tempSkillDst, rel));
         if (h !== dh) {
-          removeEntrySafe(tempSkillDst);
+          await removeEntryWithRetry(tempSkillDst);
           throw new Error(`Skill hash verification failed for ${entry.name}/${rel}`);
         }
         files[rel] = h;
       }
-      removeEntrySafe(dst);
-      fs.renameSync(tempSkillDst, dst);
+      await replaceDirectoryAtomicOrInPlace(tempSkillDst, dst);
+      const actualFiles = collectRelativeFiles(dst);
+      if (actualFiles.length !== expectedFiles.length || actualFiles.some((rel, idx) => rel !== expectedFiles[idx] || sha256File(path.join(dst, rel)) !== files[rel])) {
+        throw new Error(`Installed skill verification mismatch after swap for ${entry.name}`);
+      }
       skillLocks[entry.name] = {
         package: entry.package,
         version: entry.version,
@@ -867,12 +981,20 @@ async function performInstallLocked(opts) {
       }, null, 2) + '\n',
       'utf8'
     );
-    removeEntrySafe(prevStageBackup);
+    await removeEntryWithRetry(prevStageBackup);
   } catch (err) {
-    removeEntrySafe(tempStageRoot);
+    for (const tmpSkill of activeTempSkills) {
+      try { removeEntrySafe(tmpSkill); } catch {}
+    }
+    try { removeEntrySafe(tempStageRoot); } catch {}
     if (hadPrevStage && fs.existsSync(prevStageBackup)) {
-      removeEntrySafe(stageRoot);
-      try { fs.renameSync(prevStageBackup, stageRoot); } catch {}
+      if (movedPrevStage) {
+        try { removeEntrySafe(stageRoot); } catch {}
+        try { fs.renameSync(prevStageBackup, stageRoot); } catch {}
+      } else if (inPlaceStageBackup) {
+        try { await syncPlainTreeInPlace(prevStageBackup, stageRoot); } catch {}
+        try { removeEntrySafe(prevStageBackup); } catch {}
+      }
     } else if (
       !hadPrevStage &&
       usageBeforeInstall &&
@@ -883,6 +1005,13 @@ async function performInstallLocked(opts) {
       try {
         if (assertSafeDeletionTarget(dshHome, stageRoot)) removeEntrySafe(stageRoot);
       } catch {}
+    }
+    for (const entry of SKILL_ENTRIES) {
+      const dst = path.join(skillRoot, entry.name);
+      const backedSkill = path.join(backupRoot, `skill-${entry.name}`);
+      if (!fs.existsSync(dst) && fs.existsSync(backedSkill)) {
+        try { copyPlainTree(backedSkill, dst); } catch {}
+      }
     }
     throw err;
   }

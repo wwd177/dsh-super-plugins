@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.20.2-dsh.1 (SuperAgent `1.25.2-dsh.1` / Super Teams `0.17.2-dsh.1` / Shared Core `0.19.1` / Installer Skill `1.4.0`)
+
+Fixes DeepSeek Harness Desktop (`dsh-app://app/`) workbench loading failures caused by a Cordis service-injection startup race and hardens desktop asset/ZIP delivery:
+
+- **Cordis Strict-Proxy Injection & Startup Order Fix (`index.js`, `runtime.mjs`, `dsh-http.mjs`)**:
+  - Replaces unguarded direct property reads (`ctx.connection`, `ctx.profileContext`, `ctx.subagents`, `ctx.workingDirectory`, `ctx.logger`) with `safeGetCordisService` / `safeCordisWarn`, preventing `Error: cannot get property "connection" without inject` crashes inside real `@deepseek-ai/cordis` when `webServer` initializes before `connection`.
+  - Changes workbench HTTP registration from `ctx.inject(['webServer'], ...)` to `ctx.inject(['webServer', 'connection'], ...)` with synchronous `/superagent-engine` route registration, dynamic `router.setFence(...)` / `runtime.bindConnection(...)` binding, fail-closed `connection.requestRejection(req)` enforcement during engine warm-up, and leak-free `engine.close()` cleanup on startup failure.
+- **Electron `Content-Length` Header Compatibility for Delivery ZIP (`delivery-export.mjs`, `public/delivery-download.js`)**:
+  - Adds `X-Delivery-Bytes` alongside `Content-Length` / `X-Delivery-SHA256` and updates `fetchDelivery` to validate consistency when both exist while falling back cleanly to `X-Delivery-Bytes` when Electron `forwardWebRequest` strips `Content-Length`.
+- **Client Workbench Response Verification & Retry (`client.js`, `tests/v0202-dsh-desktop-workbench.test.mjs`, `tests/verify-native.mjs`)**:
+  - Verifies `style.css` / `template.html` HTTP status and non-HTML MIME type before dynamic module import, adds automatic cold-start cache-busting retries (`?retry=...`) and a manual「重新加载」button, and adds native reverse-order Cordis + strict-proxy + Electron ZIP header-stripping regression tests.
+- **Windows Live-Upgrade Resilience (`scripts/install.mjs`)**:
+  - Moves skill staging directories out of the watched `~/.dsh/skills` tree, adds bounded retry/in-place sync fallback for `EPERM`/`EBUSY`/`EACCES` directory watcher locks while DeepSeek Harness is running, and restores backed-up skills on rollback.
+
 ## v0.20.1-dsh.1 (SuperAgent `1.25.1-dsh.1` / Super Teams `0.17.1-dsh.1` / Shared Core `0.19.1` / Installer Skill `1.4.0`)
 
 Adds fail-closed multi-wave delivery completeness enforcement across both hosts and records updated live-model blind benchmark results after fixing Wave-2 dependency loop completion:

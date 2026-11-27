@@ -1,11 +1,11 @@
 {
   "name": "@local/dsh-super-teams",
-  "version": "0.17.1-dsh.1",
+  "version": "0.17.2-dsh.1",
   "private": true,
   "type": "module",
   "license": "MIT",
   "icon": "./assets/icon.svg",
-  "description": "SuperAgent 内置审阅工作台与共享持久引擎 · DeepSeek Harness 跨平台通用版（Engine 0.20.1-dsh.1，含多波次完整性交付门禁、安全隔离与 Windows 长路径兜底、事务型预算熔断、精确 CPM 关键路径、有界对账终态保护与多聊天严格防漂移）",
+  "description": "SuperAgent 内置审阅工作台与共享持久引擎 · DeepSeek Harness 跨平台通用版（Engine 0.20.2-dsh.1，修复 DSH 桌面端 Cordis 注入竞态、Electron 下载头兼容、多波次完整性交付门禁与安全隔离）",
   "engines": {
     "node": ">=22.13.0",
     "dsh": ">=0.2.0-rc.1 <0.3.0-0"

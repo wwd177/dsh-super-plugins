@@ -207,7 +207,7 @@ export async function sendDeliveryExport({ engine, teamId, req, res }) {
   try {
     result = await createDeliveryExport({ engine, teamId, signal: controller.signal });
     result.assertCurrent();
-    res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Disposition': `attachment; filename="${result.filename}"`, 'Content-Length': result.bytes, 'Cache-Control': 'no-store', 'X-Delivery-SHA256': result.sha256 });
+    res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Disposition': `attachment; filename="${result.filename}"`, 'Content-Length': result.bytes, 'X-Delivery-Bytes': String(result.bytes), 'Cache-Control': 'no-store', 'X-Delivery-SHA256': result.sha256 });
     await pipeline(fs.createReadStream(result.zipPath), res, { signal: controller.signal });
   } finally {
     clearTimeout(timer); req.off('aborted', disconnected); res.off('close', disconnected);

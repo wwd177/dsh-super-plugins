@@ -15,9 +15,34 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export const isEngineReference = value => typeof value === 'string' && (value.startsWith('engine:') || UUID_RE.test(value));
 const stripEnginePrefix = value => String(value ?? '').replace(/^engine:/, '');
 
+export function safeGetCordisService(ctx, name) {
+  if (!ctx || typeof ctx !== 'object') return undefined;
+  try {
+    if (typeof ctx.get === 'function') {
+      const viaGet = ctx.get(name);
+      if (viaGet !== undefined) return viaGet;
+    }
+  } catch {}
+  try {
+    return ctx[name];
+  } catch {
+    return undefined;
+  }
+}
+
+export function safeCordisWarn(ctx, message) {
+  try {
+    const logger = safeGetCordisService(ctx, 'logger');
+    if (typeof logger?.warn === 'function') { logger.warn(message); return; }
+    if (typeof logger === 'function') { logger('super-teams')?.warn?.(message); return; }
+  } catch {}
+  try { console.warn(message); } catch {}
+}
+
 export function defaultDshEngineDataDir(ctx = null) {
   if (process.env.DSH_SUPERAGENT_DATA_DIR) return path.resolve(process.env.DSH_SUPERAGENT_DATA_DIR);
-  const profileHome = ctx?.profileContext?.home || ctx?.profileContext?.dir;
+  const profileContext = safeGetCordisService(ctx, 'profileContext');
+  const profileHome = profileContext?.home || profileContext?.dir;
   if (typeof profileHome === 'string' && profileHome.trim()) {
     return path.join(profileHome, 'plugin-data', 'dsh-super-teams');
   }
@@ -31,12 +56,12 @@ function callerSessionInfo(ctx, exec) {
   if (!caller?.id) return { sessionId: null, rootSessionId: null, cwd: null };
   let root = caller;
   try {
-    const subagents = ctx?.get?.('subagents') ?? ctx?.subagents;
+    const subagents = safeGetCordisService(ctx, 'subagents');
     if (subagents?.rootOf) root = subagents.rootOf(caller);
   } catch { /* fallback to caller */ }
   let cwd = root?.session?.header?.cwd ?? null;
   try {
-    const wd = ctx?.get?.('workingDirectory') ?? ctx?.workingDirectory;
+    const wd = safeGetCordisService(ctx, 'workingDirectory');
     if (wd?.get && root?.session) cwd = wd.get(root.session) ?? cwd;
   } catch { /* ignore */ }
   return { sessionId: caller.id, rootSessionId: root?.id ?? caller.id, cwd };
@@ -75,6 +100,28 @@ export class DshSuperTeamsRuntime {
     this.router = null;
     this.initPromise = null;
     this.closed = false;
+    this._connection = null;
+  }
+
+  _buildConnectionFence() {
+    const conn = this._connection ?? safeGetCordisService(this.ctx, 'connection');
+    if (typeof conn?.requestRejection !== 'function') return null;
+    return req => {
+      const current = this._connection ?? safeGetCordisService(this.ctx, 'connection');
+      return typeof current?.requestRejection === 'function' && current.requestRejection(req) === undefined;
+    };
+  }
+
+  bindConnection(connection) {
+    if (typeof connection?.requestRejection !== 'function') return () => {};
+    this._connection = connection;
+    this.router?.setFence?.(this._buildConnectionFence());
+    return () => {
+      if (this._connection === connection) {
+        this._connection = null;
+        this.router?.setFence?.(this._buildConnectionFence());
+      }
+    };
   }
 
   ensureStarted() {
@@ -106,29 +153,27 @@ export class DshSuperTeamsRuntime {
     });
     try {
       await engine.initialize({ connectInBackground: true });
+      if (this.closed) {
+        throw new Error('DshSuperTeamsRuntime closed during initialization');
+      }
+      this.engine = engine;
+      const fence = this._buildConnectionFence();
+      this.router = createDshEngineRouter({
+        engine: this.engine,
+        contextStore: this.contextStore,
+        adapter: this.adapter,
+        approvals: this.approvals,
+        ...(this.publicDir ? { publicDir: this.publicDir } : {}),
+        basePrefix: '/superagent-engine',
+        fence,
+      });
+      return this;
     } catch (err) {
       try { await engine.close(); } catch {}
+      this.engine = null;
+      this.router = null;
       throw err;
     }
-    if (this.closed) {
-      try { await engine.close(); } catch {}
-      throw new Error('DshSuperTeamsRuntime closed during initialization');
-    }
-    this.engine = engine;
-    const connection = this.ctx?.get?.('connection') ?? this.ctx?.connection;
-    const fence = connection?.requestRejection
-      ? req => connection.requestRejection(req) === undefined
-      : null;
-    this.router = createDshEngineRouter({
-      engine: this.engine,
-      contextStore: this.contextStore,
-      adapter: this.adapter,
-      approvals: this.approvals,
-      ...(this.publicDir ? { publicDir: this.publicDir } : {}),
-      basePrefix: '/superagent-engine',
-      fence,
-    });
-    return this;
   }
 
   async executeTool(name, rawArgs, exec = {}) {
@@ -706,7 +751,7 @@ export class DshSuperTeamsRuntime {
   async close() {
     if (this.closed) return;
     this.closed = true;
-    const warn = (comp, err) => this.ctx?.logger?.warn?.(`super-teams: ${comp} disposal warning: ${err?.message ?? err}`);
+    const warn = (comp, err) => safeCordisWarn(this.ctx, `super-teams: ${comp} disposal warning: ${err?.message ?? err}`);
     if (this.initPromise) {
       try { await this.initPromise; } catch {}
     }

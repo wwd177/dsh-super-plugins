@@ -66,6 +66,10 @@ export function createDshEngineRouter({
   fence = null,
   token = randomBytes(32).toString('hex'),
 }) {
+  let activeFence = typeof fence === 'function' ? fence : null;
+  const setFence = nextFence => {
+    activeFence = typeof nextFence === 'function' ? nextFence : null;
+  };
   let closing = false;
   let disk = {}, diskRefreshAt = 0, diskFlight = null;
   let changeSeq = 0;
@@ -160,9 +164,9 @@ export function createDshEngineRouter({
     };
 
     try {
-      const fencedMode = typeof fence === 'function';
+      const fencedMode = typeof activeFence === 'function';
       if (fencedMode) {
-        if (!fence(req)) return send(403, { error: 'DeepSeek Harness 会话鉴权未通过' });
+        if (!activeFence(req)) return send(403, { error: 'DeepSeek Harness 会话鉴权未通过' });
         if (req.method !== 'GET' && req.method !== 'HEAD' && req.headers?.origin && /^https?:/i.test(req.headers.origin) && req.headers?.host) {
           let originHost = '';
           try { originHost = new URL(req.headers.origin).host; } catch {}
@@ -513,7 +517,7 @@ export function createDshEngineRouter({
     sseClients.clear();
   };
 
-  return { handler, notifyWorkbenchOpen, dispose, token };
+  return { handler, notifyWorkbenchOpen, setFence, dispose, token };
 }
 
 export function createStandaloneDshServer(options) {
